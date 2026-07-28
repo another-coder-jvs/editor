@@ -1,0 +1,625 @@
+You are an expert AI Engineer and Senior Full Stack Developer.
+
+Build a COMPLETE production-quality application.
+
+The application must be 100% OPEN SOURCE.
+Do NOT use any paid APIs.
+Do NOT use OpenAI APIs.
+Do NOT use Gemini APIs.
+Do NOT use Replicate.
+Do NOT use Stability AI Cloud.
+Do NOT require any API keys.
+
+Everything must run LOCALLY on the user's GPU.
+
+========================
+PROJECT GOAL
+========================
+
+Create an AI Image Editor that automatically separates an image into semantic layers.
+
+Instead of Photoshop layers, every detected object becomes its own editable layer.
+
+Example:
+
+Input
+
+Person standing near a red car with mountains and sky.
+
+Automatically create
+
+Layer 1
+Person
+
+Layer 2
+Car
+
+Layer 3
+Road
+
+Layer 4
+Sky
+
+Layer 5
+Mountains
+
+Layer 6
+Trees
+
+Layer 7
+Background
+
+Every layer should be editable independently.
+
+Finally merge every edited layer into a single high-quality image.
+
+No manual masking should be required.
+
+========================
+TECH STACK
+========================
+
+Frontend
+
+React
+TypeScript
+TailwindCSS
+React Flow (optional)
+Zustand
+Fabric.js or Konva.js
+Vite
+
+Backend
+
+Python
+FastAPI
+PyTorch
+OpenCV
+Pillow
+NumPy
+
+========================
+AI MODELS
+========================
+
+Everything must be open-source.
+
+Use ONLY these models.
+
+Object Detection
+
+Grounding DINO
+
+Object Segmentation
+
+SAM2 (Segment Anything Model 2)
+
+Image Editing
+
+FLUX Kontext (Open Source version)
+
+Fallback
+
+Stable Diffusion XL Inpainting
+
+Image Generation
+
+Flux Dev
+
+Background Removal
+
+Rembg
+
+Upscaling
+
+Real-ESRGAN
+
+Face Restoration
+
+CodeFormer
+
+Prompt Understanding
+
+Qwen2.5 Instruct
+or
+Llama 3.1 Instruct
+
+Everything must work locally.
+
+========================
+PIPELINE
+========================
+
+User uploads image
+
+↓
+
+Grounding DINO detects every object
+
+↓
+
+SAM2 creates precise mask for every object
+
+↓
+
+Convert every object into an independent transparent PNG layer
+
+↓
+
+Display every layer in left sidebar
+
+↓
+
+User clicks any layer
+
+↓
+
+User writes edit prompt
+
+Examples
+
+"Make shirt black"
+
+"Replace car with Ferrari"
+
+"Convert tree into Sakura"
+
+"Blur background"
+
+"Change sky to sunset"
+
+↓
+
+Only the selected layer should be edited.
+
+No other layers may change.
+
+↓
+
+After editing
+
+Replace edited layer
+
+↓
+
+Merge all layers
+
+↓
+
+Export final PNG
+
+========================
+LAYER SYSTEM
+========================
+
+Each layer must store
+
+id
+
+name
+
+mask
+
+transparent png
+
+bounding box
+
+z-index
+
+visibility
+
+opacity
+
+position
+
+scale
+
+rotation
+
+history
+
+Undo/Redo
+
+========================
+CANVAS
+========================
+
+Canvas must support
+
+Zoom
+
+Pan
+
+Layer reorder
+
+Layer hide
+
+Layer lock
+
+Opacity
+
+Transform
+
+Crop
+
+Selection
+
+Duplicate layer
+
+Delete layer
+
+Multiple object selection
+
+Keyboard shortcuts
+
+========================
+EDITING FEATURES
+========================
+
+Every layer should support
+
+Color correction
+
+Brightness
+
+Contrast
+
+Saturation
+
+Blur
+
+Sharpen
+
+Background remove
+
+Replace object
+
+Generative fill
+
+Erase
+
+Clone
+
+Object expansion
+
+Style transfer
+
+Cartoon
+
+Anime
+
+Oil painting
+
+Sketch
+
+Pixel art
+
+========================
+SMART PROMPTS
+========================
+
+If user writes
+
+"make shirt blue"
+
+LLM should determine
+
+Target Object
+
+Person
+
+Target Region
+
+Shirt
+
+Edit Type
+
+Recolor
+
+Only shirt changes.
+
+Nothing else.
+
+Another example
+
+"Make only the dog smile"
+
+Only dog layer changes.
+
+========================
+AUTO MASK REFINEMENT
+========================
+
+After SAM2 segmentation
+
+Run
+
+Morphological cleanup
+
+Hole filling
+
+Edge feathering
+
+Anti-aliasing
+
+to obtain clean masks.
+
+========================
+MERGING
+========================
+
+Merge layers using
+
+Alpha compositing
+
+Support
+
+Soft edges
+
+Transparent pixels
+
+Correct shadow blending
+
+Anti-aliasing
+
+========================
+EXPORT
+========================
+
+Export
+
+PNG
+
+JPEG
+
+WebP
+
+PSD-like JSON project
+
+Project should reopen later.
+
+========================
+PROJECT SAVE
+========================
+
+Save
+
+original image
+
+all layers
+
+masks
+
+prompts
+
+history
+
+canvas position
+
+settings
+
+========================
+PERFORMANCE
+========================
+
+Support
+
+4096x4096 images
+
+Batch processing
+
+GPU acceleration
+
+CUDA
+
+Mixed Precision
+
+Memory optimization
+
+Lazy loading
+
+Progress bars
+
+Background processing
+
+========================
+FILE STRUCTURE
+========================
+
+frontend/
+
+backend/
+
+models/
+
+weights/
+
+projects/
+
+outputs/
+
+temp/
+
+========================
+BACKEND API
+========================
+
+POST /detect
+
+POST /segment
+
+POST /layers
+
+POST /edit
+
+POST /merge
+
+POST /save
+
+POST /load
+
+POST /export
+
+GET /progress
+
+========================
+UI
+========================
+
+Modern dark theme.
+
+Similar to Photoshop.
+
+Left
+
+Layers
+
+Center
+
+Canvas
+
+Right
+
+Properties
+
+Bottom
+
+History
+
+Top
+
+Toolbar
+
+========================
+TOOLBAR
+========================
+
+Move
+
+Crop
+
+Brush
+
+Eraser
+
+Magic Select
+
+Object Select
+
+Text Prompt
+
+Undo
+
+Redo
+
+Export
+
+========================
+REQUIREMENTS
+========================
+
+No placeholders.
+
+No TODOs.
+
+No fake AI responses.
+
+Everything should actually work.
+
+Download models automatically.
+
+Cache models.
+
+Support Windows.
+
+Support Linux.
+
+Support macOS.
+
+========================
+INSTALLATION
+========================
+
+Generate
+
+requirements.txt
+
+environment.yml
+
+Dockerfile
+
+docker-compose.yml
+
+setup.py
+
+README.md
+
+One-click installer
+
+========================
+README
+========================
+
+Explain
+
+Installation
+
+Model download
+
+GPU setup
+
+CPU fallback
+
+Architecture
+
+Folder structure
+
+How editing pipeline works
+
+How masks are created
+
+How merging works
+
+How prompt routing works
+
+========================
+CODE QUALITY
+========================
+
+Use
+
+SOLID principles
+
+Dependency Injection where appropriate
+
+Type hints
+
+Pydantic
+
+Logging
+
+Unit tests
+
+Error handling
+
+Reusable modules
+
+Clean architecture
+
+========================
+DELIVERABLES
+========================
+
+Return the COMPLETE project.
+
+Every file.
+
+Every folder.
+
+No omitted code.
+
+No pseudo-code.
+
+No placeholders.
+
+Everything must compile and run.

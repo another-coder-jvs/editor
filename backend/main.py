@@ -1,0 +1,65 @@
+import logging
+import os
+from contextlib import asynccontextmanager
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from routers import detect, segment, layers, edit, merge, project, export, progress
+from services.model_manager import ModelManager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting AI Image Editor backend...")
+    os.makedirs("../outputs", exist_ok=True)
+    os.makedirs("../temp", exist_ok=True)
+    os.makedirs("../projects", exist_ok=True)
+    os.makedirs("../weights", exist_ok=True)
+    yield
+    logger.info("Shutting down...")
+
+
+app = FastAPI(
+    title="AI Image Editor",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(detect.router, prefix="/detect", tags=["detect"])
+app.include_router(segment.router, prefix="/segment", tags=["segment"])
+app.include_router(layers.router, prefix="/layers", tags=["layers"])
+app.include_router(edit.router, prefix="/edit", tags=["edit"])
+app.include_router(merge.router, prefix="/merge", tags=["merge"])
+app.include_router(project.router, prefix="/project", tags=["project"])
+app.include_router(export.router, prefix="/export", tags=["export"])
+app.include_router(progress.router, prefix="/progress", tags=["progress"])
+
+if os.path.exists("../outputs"):
+    app.mount("/outputs", StaticFiles(directory="../outputs"), name="outputs")
+if os.path.exists("../temp"):
+    app.mount("/temp", StaticFiles(directory="../temp"), name="temp")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+if __name__ == '__main__':
+    uvicorn.run(app, host="0.0.0.0" , port=8000)
