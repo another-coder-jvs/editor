@@ -10,13 +10,14 @@ from services.progress_store import set_progress
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
+BASE_DIR = Path(__file__).resolve().parents[2]  
 TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
 
 
 @router.post("", response_model=EditResponse)
 async def edit(req: EditRequest):
     logger.info(f"[edit] session={req.session_id} layer={req.layer_id} prompt='{req.prompt}'")
+    logger.info(f"FILE : : {TEMP_DIR} ")
     session_dir = TEMP_DIR / req.session_id
 
     layer_png = next(session_dir.glob(f"{req.layer_id}_layer*.png"), None)
@@ -29,8 +30,13 @@ async def edit(req: EditRequest):
     if not mask_png or not mask_png.exists():
         logger.error(f"[edit] mask not found for {req.layer_id}")
         raise HTTPException(status_code=404, detail="Mask not found")
-    if not Path(req.image_path).exists():
-        logger.error(f"[edit] original image not found: {req.image_path}")
+    # Resolve original image path: if req.image_path is absolute use it, otherwise join with BASE_DIR
+    image_path = Path(req.image_path)
+    if not image_path.is_absolute():
+        image_path = BASE_DIR / image_path
+    logger.info(f"[edit] resolved original image path: {image_path}")
+    if not image_path.exists():
+        logger.error(f"[edit] original image not found: {image_path}")
         raise HTTPException(status_code=404, detail="Original image not found")
 
     set_progress(req.session_id, "edit", 0.1, f"Editing layer {req.layer_id}…")
@@ -40,7 +46,7 @@ async def edit(req: EditRequest):
             layer_id=req.layer_id,
             layer_name=req.layer_id.split("_")[2] if "_" in req.layer_id else req.layer_id,
             layer_png_path=str(layer_png),
-            original_image_path=req.image_path,
+            original_image_path=str(image_path),
             mask_path=str(mask_png),
             prompt=req.prompt,
             strength=req.strength,
