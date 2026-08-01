@@ -60,8 +60,25 @@ class ModelManager:
                     f"[model_manager] FLUX img2img unavailable ({e}), using SDXL img2img"
                 )
                 self._img2img_pipe = self._load_sdxl_img2img()
-
         return self._img2img_pipe
+
+    def unload_img2img_pipe(self):
+        if self._img2img_pipe is not None:
+            del self._img2img_pipe
+            self._img2img_pipe = None
+            import gc; gc.collect()
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            logger.info("[model_manager] img2img pipeline unloaded")
+
+    def unload_inpaint_pipe(self):
+        if self._inpaint_pipe is not None:
+            del self._inpaint_pipe
+            self._inpaint_pipe = None
+            import gc; gc.collect()
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            logger.info("[model_manager] inpaint pipeline unloaded")
 
     # ── Grounding DINO ────────────────────────────────────────────────────────
     def get_grounding_dino(self):
@@ -141,18 +158,17 @@ class ModelManager:
         return pipe
     def _load_sdxl_img2img(self):
         logger.info("[model_manager] Loading SDXL img2img...")
-
         pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0",
-            torch_dtype=DTYPE,
+            torch_dtype=torch.float32 if DEVICE == "cpu" else DTYPE,
+            low_cpu_mem_usage=True,
             cache_dir=str(WEIGHTS_DIR / "sdxl_img2img"),
         )
-
-        pipe.to(DEVICE)
-        pipe.enable_model_cpu_offload()
-
+        if DEVICE == "cuda":
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cpu")
         logger.info("[model_manager] SDXL img2img loaded")
-
         return pipe
     # ── Inpainting ────────────────────────────────────────────────────────────
     def get_inpaint_pipe(self):
@@ -183,12 +199,15 @@ class ModelManager:
         logger.info("[model_manager] Loading SDXL inpaint…")
         pipe = StableDiffusionXLInpaintPipeline.from_pretrained(
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
-            torch_dtype=DTYPE,
+            torch_dtype=torch.float32 if DEVICE == "cpu" else DTYPE,
+            low_cpu_mem_usage=True,
             cache_dir=str(WEIGHTS_DIR / "sdxl_inpaint"),
         )
-        pipe.to(DEVICE)
-        pipe.enable_model_cpu_offload()
-        logger.info("[model_manager] SDXL inpaint loaded with CPU offload")
+        if DEVICE == "cuda":
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cpu")
+        logger.info("[model_manager] SDXL inpaint loaded")
         return pipe
 
     # ── LLM ───────────────────────────────────────────────────────────────────

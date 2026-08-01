@@ -84,3 +84,14 @@ export async function getProgress(session_id: string): Promise<ProgressInfo> {
   const { data } = await api.get(`/progress/${session_id}`)
   return data
 }
+
+export async function getLatestSession(): Promise<{
+  session: {
+    session_id: string
+    image_path: string
+    layers: LayerData[]
+  } | null
+}> {
+  const { data } = await api.get('/session/latest')
+  return data
+}

@@ -34,7 +34,7 @@ async def edit(req: EditRequest):
     image_path = Path(req.image_path)
     if not image_path.is_absolute():
         image_path = BASE_DIR / image_path 
-    image_path = Path(f"{BASE_DIR}\{str(image_path).split("E:\\")[1]}")
+    image_path = Path(f"{BASE_DIR}\{str(image_path).split("E:\\editor\\")[1]}")
     logger.info(f"[edit] resolved original image path: {image_path}")
     if not image_path.exists():
         logger.error(f"[edit] original image not found: {image_path}")
@@ -59,4 +59,6 @@ async def edit(req: EditRequest):
         raise
     logger.info(f"[edit] done → {edited_path}")
     set_progress(req.session_id, "edit", 1.0, "Edit complete", done=True)
+    if "editor" in edited_path.lower():
+        edited_path = edited_path.lower().split("e:\\editor")[1]
     return EditResponse(layer_id=req.layer_id, edited_png_path=edited_path, session_id=req.session_id)

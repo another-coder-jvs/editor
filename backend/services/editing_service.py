@@ -34,6 +34,25 @@ def edit_layer(
     inpaint_prompt = parsed.get("inpaint_prompt", prompt)
     logger.info(f"[editing] edit_type={edit_type} params={edit_params}")
 
+    # On low-RAM systems (<6GB), never load heavy diffusion models
+    import psutil
+    _available_gb = psutil.virtual_memory().available / 1024**3
+    _low_ram = _available_gb < 5.5
+
+    # Reroute style_transfer: color → recolor, or low RAM → cartoon (no model)
+    if edit_type == "style_transfer":
+        if "color" in edit_params:
+            edit_type = "recolor"
+            logger.info("[editing] style_transfer+color → recolor")
+        elif _low_ram:
+            edit_type = "cartoon"
+            logger.info(f"[editing] style_transfer → cartoon (low RAM: {_available_gb:.1f}GB free)")
+
+    # On low RAM, reroute all heavy AI types to safe fallbacks
+    if _low_ram and edit_type in {"replace", "generative_fill", "anime", "oil_painting", "other"}:
+        edit_type = "cartoon"
+        logger.warning(f"[editing] AI edit skipped (only {_available_gb:.1f}GB RAM free) → cartoon fallback")
+
     layer_img = Image.open(layer_png_path).convert("RGBA")
     logger.debug(f"[editing] layer image size: {layer_img.size}")
 
@@ -44,35 +63,42 @@ def edit_layer(
     AI_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     handlers = {
-        "recolor":          _recolor,
-        "blur":             _blur,
-        "sharpen":          _sharpen,
-        "brightness":       _brightness,
-        "contrast":         _contrast,
-        "saturation":       _saturation,
-        "background_remove":_background_remove,
-        "erase":            _erase,
-        "cartoon":          _cartoon,
-        "sketch":           _sketch,
-        "pixel_art":        _pixel_art,
-        "upscale":          _upscale,
-        "replace":          _inpaint,
-        "generative_fill":  _inpaint,
-        "anime":            _inpaint,
-        "oil_painting":     _inpaint,
-        "other":            _inpaint,
-        "style_transfer":   _style_transfer
-
+        "recolor":           _recolor,
+        "blur":              _blur,
+        "sharpen":           _sharpen,
+        "brightness":        _brightness,
+        "contrast":          _contrast,
+        "saturation":        _saturation,
+        "background_remove": _background_remove,
+        "erase":             _erase,
+        "cartoon":           _cartoon,
+        "sketch":            _sketch,
+        "pixel_art":         _pixel_art,
+        "upscale":           _upscale,
+        "replace":           _inpaint,
+        "generative_fill":   _inpaint,
+        "anime":             _inpaint,
+        "oil_painting":      _inpaint,
+        "other":             _inpaint,
+        "style_transfer":    _style_transfer,
     }
+
+    # On CPU cap steps to avoid OOM / multi-hour runs
+    if DEVICE == "cpu":
+        steps = min(steps, 8)
 
     handler = handlers.get(edit_type, _inpaint)
     logger.info(f"[editing] dispatching to handler: {handler.__name__}")
-    logger.info(f"EDIT TYPE : {edit_type} : finding in : {AI_TYPES}")
     if edit_type in AI_TYPES:
-        logger.info(f"Calling If: {handler}")
         result = handler(layer_img, original_image_path, mask_path, inpaint_prompt, strength, guidance_scale, steps, edit_params)
+        # Free heavy model RAM immediately after use
+        import gc
+        if edit_type == "style_transfer":
+            model_manager.unload_img2img_pipe()
+        elif edit_type in {"replace", "generative_fill", "anime", "oil_painting", "other"}:
+            model_manager.unload_inpaint_pipe()
+        gc.collect()
     else:
-        logger.info(f"Calling Else : {handler}")
         result = handler(layer_img, edit_params)
 
     result.save(str(out_path))
@@ -219,6 +245,11 @@ def _inpaint(
     orig = Image.open(original_image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     w, h = orig.size
+    # On CPU, downscale to 512px max to avoid OOM
+    if DEVICE == "cpu":
+        max_side = 512
+        scale_factor = min(max_side / w, max_side / h, 1.0)
+        w, h = int(w * scale_factor), int(h * scale_factor)
     w8, h8 = (w // 8) * 8, (h // 8) * 8
     logger.debug(f"[editing/inpaint] resizing to {w8}x{h8} (multiple of 8)")
 
@@ -262,8 +293,13 @@ def _style_transfer(
     image = Image.open(original_image_path).convert("RGB")
 
     w, h = image.size
-    w8, h8 = (w // 8) * 8, (h // 8) * 8
+    # On CPU, downscale to 512px max to avoid OOM
+    if DEVICE == "cpu":
+        max_side = 512
+        scale_factor = min(max_side / w, max_side / h, 1.0)
+        w, h = int(w * scale_factor), int(h * scale_factor)
 
+    w8, h8 = (w // 8) * 8, (h // 8) * 8
     image = image.resize((w8, h8), Image.LANCZOS)
 
     logger.info("[editing/style_transfer] running img2img pipeline...")

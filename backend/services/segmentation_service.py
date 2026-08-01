@@ -3,6 +3,7 @@ Segmentation service – SAM2 masks + refinement + transparent PNG layers.
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -169,8 +170,15 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         # ))
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
 
+    # Save session metadata for cache restore
+    meta = {
+        "session_id": session_id,
+        "image_path": str(image_path),
+        "layers": [l.model_dump() for l in layers],
+    }
+    (session_dir / "session_meta.json").write_text(json.dumps(meta))
+
     logger.info(f"[segmentation] done — {len(layers)} layers created for session {session_id}")
-    logger.info(f"Layeres : {layers}")
     return layers
 
 
