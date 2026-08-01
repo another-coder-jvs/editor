@@ -45,14 +45,28 @@ def detect_objects(
         outputs = model(**inputs)
     logger.info("[detection] inference complete, post-processing…")
 
+    # results = processor.post_process_grounded_object_detection(
+    #     outputs,
+    #     inputs.input_ids,
+    #     box_threshold=box_threshold,
+    #     text_threshold=text_threshold,
+    #     target_sizes=[(h, w)],
+    # )[0]
+
     results = processor.post_process_grounded_object_detection(
-        outputs,
-        inputs.input_ids,
-        box_threshold=box_threshold,
-        text_threshold=text_threshold,
+        outputs=outputs,
+        input_ids=inputs.input_ids,
         target_sizes=[(h, w)],
     )[0]
 
+    # Manual filtering for older transformers versions
+    keep = results["scores"] > box_threshold
+
+    results = {
+        "boxes": results["boxes"][keep],
+        "scores": results["scores"][keep],
+        "labels": [results["labels"][i] for i, k in enumerate(keep.tolist()) if k],
+    }
     logger.info(f"[detection] raw detections: {len(results['scores'])}")
 
     objects: List[Dict[str, Any]] = []

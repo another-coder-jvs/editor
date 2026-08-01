@@ -1,6 +1,22 @@
 **/node_modules
 **lock.json
-**cahe**
+**cache**
+**__py*
 **models/
+**_py*/
 /outputs
 **/weights
+**cache__
+.venv/
+backend/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+backend/.venv/
+
+# VS Code
+.vscode/

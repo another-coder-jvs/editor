@@ -5,7 +5,7 @@ const CHECKERBOARD = `
   repeating-conic-gradient(#2a2a2a 0% 25%, #1a1a1a 0% 50%)
   0 0 / 20px 20px
 `
-
+const API_BASE = 'http://localhost:5000'
 export const Canvas: React.FC = () => {
   const {
     layers, originalImageUrl, canvasWidth, canvasHeight,
@@ -120,9 +120,11 @@ export const Canvas: React.FC = () => {
         {/* Layers */}
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
-          const thumbUrl = layer.png_path
-            ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
-            : null
+          // const thumbUrl = layer.png_path
+          //   ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
+          //   : null
+          const thumbUrl = layer.png_path ? `${API_BASE}${layer.png_path}` : null
+          console.log("GOT : " , thumbUrl)
           return (
             <div
               key={layer.id}

@@ -5,6 +5,7 @@ import {
   Eye, EyeOff, Lock, Unlock, Trash2, Copy,
   ChevronUp, ChevronDown,
 } from 'lucide-react'
+const API_BASE = 'http://localhost:5000'
 
 export const LayerPanel: React.FC = () => {
   const {
@@ -60,9 +61,10 @@ const LayerItem: React.FC<LayerItemProps> = ({
   layer, selected, onSelect, onToggleVisible,
   onToggleLock, onDelete, onDuplicate, onMoveUp, onMoveDown,
 }) => {
-  const thumbUrl = layer.png_path
-    ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
-    : null
+  // const thumbUrl = layer.png_path
+  //   ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
+  //   : null
+  const thumbUrl = layer.png_path ? `${API_BASE}${layer.png_path}` : null
 
   return (
     <div

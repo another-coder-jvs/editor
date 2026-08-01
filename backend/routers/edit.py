@@ -17,7 +17,7 @@ TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
 @router.post("", response_model=EditResponse)
 async def edit(req: EditRequest):
     logger.info(f"[edit] session={req.session_id} layer={req.layer_id} prompt='{req.prompt}'")
-    logger.info(f"FILE : : {TEMP_DIR} ")
+    logger.info(f"FILE : : {BASE_DIR} ")
     session_dir = TEMP_DIR / req.session_id
 
     layer_png = next(session_dir.glob(f"{req.layer_id}_layer*.png"), None)
@@ -33,7 +33,8 @@ async def edit(req: EditRequest):
     # Resolve original image path: if req.image_path is absolute use it, otherwise join with BASE_DIR
     image_path = Path(req.image_path)
     if not image_path.is_absolute():
-        image_path = BASE_DIR / image_path
+        image_path = BASE_DIR / image_path 
+    image_path = Path(f"{BASE_DIR}\{str(image_path).split("E:\\")[1]}")
     logger.info(f"[edit] resolved original image path: {image_path}")
     if not image_path.exists():
         logger.error(f"[edit] original image not found: {image_path}")

@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from diffusers import StableDiffusionXLImg2ImgPipeline
 
 import torch
 
@@ -46,7 +47,21 @@ class ModelManager:
         self._llm_pipe = None
         self._rembg_session = None
         self._realesrgan = None
+        self._img2img_pipe = None
         logger.info("[model_manager] ModelManager singleton initialized (all models lazy)")
+
+    def get_img2img_pipe(self):
+        if self._img2img_pipe is None:
+            logger.info("[model_manager] Loading img2img pipeline...")
+            try:
+                self._img2img_pipe = self._load_flux_img2img()
+            except Exception as e:
+                logger.warning(
+                    f"[model_manager] FLUX img2img unavailable ({e}), using SDXL img2img"
+                )
+                self._img2img_pipe = self._load_sdxl_img2img()
+
+        return self._img2img_pipe
 
     # ── Grounding DINO ────────────────────────────────────────────────────────
     def get_grounding_dino(self):
@@ -109,7 +124,36 @@ class ModelManager:
         predictor = SamPredictor(sam)
         logger.info("[model_manager] SAM fallback loaded")
         return predictor
+    def _load_flux_img2img(self):
+        logger.info("[model_manager] Loading FLUX img2img...")
 
+        pipe = FluxImg2ImgPipeline.from_pretrained(
+            "black-forest-labs/FLUX.1-dev",
+            torch_dtype=DTYPE,
+            cache_dir=str(WEIGHTS_DIR / "flux"),
+        )
+
+        pipe.to(DEVICE)
+        pipe.enable_model_cpu_offload()
+
+        logger.info("[model_manager] FLUX img2img loaded")
+
+        return pipe
+    def _load_sdxl_img2img(self):
+        logger.info("[model_manager] Loading SDXL img2img...")
+
+        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            torch_dtype=DTYPE,
+            cache_dir=str(WEIGHTS_DIR / "sdxl_img2img"),
+        )
+
+        pipe.to(DEVICE)
+        pipe.enable_model_cpu_offload()
+
+        logger.info("[model_manager] SDXL img2img loaded")
+
+        return pipe
     # ── Inpainting ────────────────────────────────────────────────────────────
     def get_inpaint_pipe(self):
         if self._inpaint_pipe is None:
@@ -157,19 +201,35 @@ class ModelManager:
                 logger.warning(f"[model_manager] Qwen unavailable ({e}), trying Llama 3.1")
                 self._llm_pipe = self._load_llama()
         return self._llm_pipe
-
     def _load_qwen(self):
         from transformers import pipeline as hf_pipeline
-        logger.info("[model_manager] Loading Qwen2.5-7B-Instruct…")
+        import torch
+
+        logger.info('[model_manager] Loading Qwen2.5-0.5B-Instruct on CPU...')
+
         pipe = hf_pipeline(
-            "text-generation",
-            model="Qwen/Qwen2.5-7B-Instruct",
-            torch_dtype=DTYPE,
-            device_map="auto",
-            model_kwargs={"cache_dir": str(WEIGHTS_DIR / "qwen")},
+            'text-generation',
+            model='Qwen/Qwen2.5-0.5B-Instruct',
+            torch_dtype=torch.float32,   # CPU safe
+            device_map=None,             # IMPORTANT: no auto offload
+            model_kwargs={'cache_dir': str(WEIGHTS_DIR / 'qwen')},
         )
-        logger.info("[model_manager] Qwen2.5 loaded")
+
+        logger.info('[model_manager] Qwen2.5 loaded')
         return pipe
+
+    # def _load_qwen(self):
+    #     from transformers import pipeline as hf_pipeline
+    #     logger.info("[model_manager] Loading Qwen2.5-7B-Instruct…")
+    #     pipe = hf_pipeline(
+    #         "text-generation",
+    #         model="Qwen/Qwen2.5-7B-Instruct",
+    #         torch_dtype=DTYPE,
+    #         device_map="auto",
+    #         model_kwargs={"cache_dir": str(WEIGHTS_DIR / "qwen")},
+    #     )
+    #     logger.info("[model_manager] Qwen2.5 loaded")
+    #     return pipe
 
     def _load_llama(self):
         from transformers import pipeline as hf_pipeline

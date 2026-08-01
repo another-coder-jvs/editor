@@ -14,7 +14,9 @@ from PIL import Image
 
 from services.model_manager import model_manager
 from schemas import BoundingBox, LayerData
+ 
 
+BASE_DIR = Path(__file__).resolve().parents[2]  
 logger = logging.getLogger(__name__)
 
 TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
@@ -57,7 +59,21 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     predictor = model_manager.get_sam2()
 
     logger.info(f"[segmentation] opening image: {image_path}")
-    image_pil = Image.open(image_path).convert("RGB")
+    # image_pil = Image.open(image_path).convert("RGB")
+    # image_np  = np.array(image_pil)
+    image_path = str(image_path).lstrip("/")
+
+    # Build path relative to project root
+    p = (BASE_DIR / image_path).resolve()
+
+    logger.info(f"BASE_DIR={BASE_DIR}")
+    logger.info(f"RAW={image_path}")
+    logger.info(f"FINAL={p} exists={p.exists()}")
+
+    if not p.exists():
+        raise FileNotFoundError(f"Image not found: {p}")
+
+    image_pil = Image.open(p).convert("RGB")
     image_np  = np.array(image_pil)
     logger.info(f"[segmentation] image shape: {image_np.shape}")
 
@@ -86,27 +102,75 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         except Exception as e:
             logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
             raw_mask = _bbox_mask(image_np.shape[:2], bbox)
+        refined = refine_mask(raw_mask)
 
-        refined   = refine_mask(raw_mask)
-        layer_id  = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
-        mask_path = session_dir / f"{layer_id}_mask.png"
-        png_path  = session_dir / f"{layer_id}_layer.png"
+        # generate ONCE
+        layer_id = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
 
-        Image.fromarray(refined).save(str(mask_path))
-        logger.debug(f"[segmentation] mask saved → {mask_path}")
+        # filenames
+        mask_name = f"{layer_id}_mask.png"
+        png_name  = f"{layer_id}_layer.png"
 
-        mask_to_transparent_png(image_np, refined, bbox, png_path)
+        # absolute filesystem paths (save here)
+        mask_file = session_dir / mask_name
+        png_file  = session_dir / png_name
+
+        # save files
+        Image.fromarray(refined).save(str(mask_file))
+        logger.debug(f"[segmentation] mask saved → {mask_file}")
+
+        mask_to_transparent_png(image_np, refined, bbox, png_file)
+
+        # public URLs (return these)
+        mask_url = f"/temp/{session_id}/{mask_name}"
+        png_url  = f"/temp/{session_id}/{png_name}"
 
         layers.append(LayerData(
-            id=layer_id, name=label,
-            mask_path=str(mask_path), png_path=str(png_path),
+            id=layer_id,
+            name=label,
+            mask_path=mask_url,
+            png_path=png_url,
             bbox=BoundingBox(**bbox),
             z_index=len(objects) - idx,
-            visible=True, opacity=1.0,
+            visible=True,
+            opacity=1.0,
         ))
+
+        logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
+        # refined   = refine_mask(raw_mask)
+        # layer_id  = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
+        # mask_path = session_dir / f"{layer_id}_mask.png"
+        # png_path  = session_dir / f"{layer_id}_layer.png"
+
+        # Image.fromarray(refined).save(str(mask_path))
+        # logger.debug(f"[segmentation] mask saved → {mask_path}")
+
+        # mask_to_transparent_png(image_np, refined, bbox, png_path)
+        # refined  = refine_mask(raw_mask)
+        # layer_id = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
+
+        # # filenames
+        # mask_name = f"{layer_id}_mask.png"
+        # png_name  = f"{layer_id}_layer.png"
+
+        # # absolute filesystem paths (for saving files)
+        # mask_file = session_dir / mask_name
+        # png_file  = session_dir / png_name
+
+        # # public URLs (for frontend response)
+        # mask_path = f"/temp/{session_id}/{mask_name}"
+        # png_path  = f"/temp/{session_id}/{png_name}"
+        # layers.append(LayerData(
+        #     id=layer_id, name=label,
+        #     mask_path=str(mask_path), png_path=str(png_path),
+        #     bbox=BoundingBox(**bbox),
+        #     z_index=len(objects) - idx,
+        #     visible=True, opacity=1.0,
+        # ))
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
 
     logger.info(f"[segmentation] done — {len(layers)} layers created for session {session_id}")
+    logger.info(f"Layeres : {layers}")
     return layers
 
 

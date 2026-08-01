@@ -41,7 +41,7 @@ def edit_layer(
     out_path = TEMP_DIR / session_id / f"{layer_id}_edited_{out_id}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    AI_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other"}
+    AI_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     handlers = {
         "recolor":          _recolor,
@@ -61,14 +61,18 @@ def edit_layer(
         "anime":            _inpaint,
         "oil_painting":     _inpaint,
         "other":            _inpaint,
+        "style_transfer":   _style_transfer
+
     }
 
     handler = handlers.get(edit_type, _inpaint)
     logger.info(f"[editing] dispatching to handler: {handler.__name__}")
-
+    logger.info(f"EDIT TYPE : {edit_type} : finding in : {AI_TYPES}")
     if edit_type in AI_TYPES:
+        logger.info(f"Calling If: {handler}")
         result = handler(layer_img, original_image_path, mask_path, inpaint_prompt, strength, guidance_scale, steps, edit_params)
     else:
+        logger.info(f"Calling Else : {handler}")
         result = handler(layer_img, edit_params)
 
     result.save(str(out_path))
@@ -236,3 +240,48 @@ def _inpaint(
     composited  = Image.composite(result_rgba, orig_rgba, mask_full)
     logger.info("[editing/inpaint] composited result ready")
     return composited
+
+def _style_transfer(
+    layer_img: Image.Image,
+    original_image_path: str,
+    mask_path: str,          # unused, kept for unified interface
+    prompt: str,
+    strength: float,
+    guidance_scale: float,
+    steps: int,
+    params: Dict[str, Any],
+) -> Image.Image:
+    logger.info(
+        f"[editing/style_transfer] prompt='{prompt}' "
+        f"strength={strength} guidance={guidance_scale} steps={steps}"
+    )
+
+    logger.info("[editing/style_transfer] loading img2img pipeline...")
+    pipe = model_manager.get_img2img_pipe()
+
+    image = Image.open(original_image_path).convert("RGB")
+
+    w, h = image.size
+    w8, h8 = (w // 8) * 8, (h // 8) * 8
+
+    image = image.resize((w8, h8), Image.LANCZOS)
+
+    logger.info("[editing/style_transfer] running img2img pipeline...")
+
+    result = pipe(
+        prompt=prompt,
+        image=image,
+        strength=strength,
+        guidance_scale=guidance_scale,
+        num_inference_steps=steps,
+    ).images[0]
+
+    result = result.resize((w, h), Image.LANCZOS)
+
+    logger.info("[editing/style_transfer] completed")
+
+    # return result.convert("RGBA")
+    alpha = layer_img.getchannel("A").resize((w, h), Image.LANCZOS)
+    result = result.convert("RGBA")
+    result.putalpha(alpha)
+    return result
