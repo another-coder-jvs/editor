@@ -53,39 +53,72 @@ export const PropertiesPanel: React.FC = () => {
   }
 
   const handleApplyTextEdits = async () => {
-    if (!selectedLayer || !sessionId || !originalImagePath) return
+    if (!selectedLayer || !sessionId) return
     const edits = Object.entries(textEdits).filter(([, v]) => v.trim())
     if (!edits.length) return
 
     setIsEditing(true)
     pushHistory()
-    // Build a combined prompt describing all text changes
-    const textPrompt = edits.map(([i, newText]) =>
-      `change text "${textRegions[+i]?.text}" to "${newText}"`
-    ).join(', ')
 
     try {
-      const result = await editLayer({
-        session_id: sessionId,
-        layer_id: selectedLayer.id,
-        prompt: textPrompt,
-        image_path: originalImagePath,
-        strength,
-        steps,
-        edit_type: 'text_edit',
-        edit_params: {
-          replacements: JSON.stringify(edits.map(([i, newText]) => ({
-            target_text: textRegions[+i]?.text || '',
-            new_text: newText,
-          }))),
-        },
+      // Load the layer image onto an offscreen canvas
+      const layerUrl = `${baseUrl}${selectedLayer.png_path}`
+      const img = await new Promise<HTMLImageElement>((res, rej) => {
+        const el = new Image(); el.crossOrigin = 'anonymous'
+        el.onload = () => res(el); el.onerror = rej
+        el.src = layerUrl
       })
-      updateLayer(selectedLayer.id, { png_path: result.edited_png_path, history: [...selectedLayer.history, textPrompt] })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(img, 0, 0)
+
+      for (const [i, newText] of edits) {
+        const r = textRegions[+i]
+        if (!r) continue
+        const [x1, y1, x2, y2] = r.bbox
+        const w = x2 - x1, h = y2 - y1
+        if (w < 1 || h < 1) continue
+
+        // Sample background: average rows just above and below the bbox
+        const pad = Math.max(2, Math.floor(h * 0.3))
+        const above = ctx.getImageData(x1, Math.max(0, y1 - pad), w, pad)
+        const below = ctx.getImageData(x1, Math.min(canvas.height - pad, y2), w, pad)
+        let rSum = 0, gSum = 0, bSum = 0, count = 0
+        for (const src of [above.data, below.data]) {
+          for (let p = 0; p < src.length; p += 4) {
+            rSum += src[p]; gSum += src[p+1]; bSum += src[p+2]; count++
+          }
+        }
+        const bgR = count ? Math.round(rSum/count) : 0
+        const bgG = count ? Math.round(gSum/count) : 0
+        const bgB = count ? Math.round(bSum/count) : 0
+
+        // Erase original text with background color
+        ctx.fillStyle = `rgb(${bgR},${bgG},${bgB})`
+        ctx.fillRect(x1, y1, w, h)
+
+        // Draw new text with matched color and size
+        const [tr, tg, tb] = r.color
+        ctx.fillStyle = `rgb(${tr},${tg},${tb})`
+        const fontSize = r.font_size
+        ctx.font = `bold ${fontSize}px sans-serif`
+        ctx.textBaseline = 'middle'
+        ctx.textAlign = 'center'
+        ctx.fillText(newText, x1 + w / 2, y1 + h / 2, w)
+      }
+
+      // Export canvas to blob URL and update layer in-place (no backend round-trip)
+      const blob = await new Promise<Blob>((res) => canvas.toBlob(b => res(b!), 'image/png'))
+      const blobUrl = URL.createObjectURL(blob)
+      const textPrompt = edits.map(([i, v]) => `"${textRegions[+i]?.text}" → "${v}"`).join(', ')
+      updateLayer(selectedLayer.id, { png_path: blobUrl, history: [...selectedLayer.history, textPrompt] })
       toast.success('Text updated!')
       setTextEdits({})
       setTextRegions([])
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || 'Text edit failed')
+      toast.error('Text edit failed: ' + (err?.message || err))
     } finally { setIsEditing(false) }
   }
 
