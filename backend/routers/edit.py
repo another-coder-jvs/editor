@@ -46,6 +46,8 @@ async def edit(req: EditRequest):
             session_id=req.session_id,
             layer_id=req.layer_id,
             layer_name=req.layer_id.split("_")[2] if "_" in req.layer_id else req.layer_id,
+            edit_type_override=req.edit_type,
+            edit_params_override=req.edit_params,
             layer_png_path=str(layer_png),
             original_image_path=str(image_path),
             mask_path=str(mask_png),

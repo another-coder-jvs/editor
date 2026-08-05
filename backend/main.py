@@ -23,7 +23,7 @@ logger.info(f"Imported : CORSMiddleware !")
 from fastapi.staticfiles import StaticFiles
 logger.info(f"Imported : StaticFiles !")
 
-from routers import detect, segment, layers, edit, merge, project, export, progress, session
+from routers import detect, segment, layers, edit, merge, project, export, progress, session, text
 from services.model_manager import ModelManager
 from utils import config
 logger.info("Files imported !")
@@ -71,6 +71,7 @@ app.include_router(project.router, prefix="/project", tags=["project"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(progress.router, prefix="/progress", tags=["progress"])
 app.include_router(session.router, prefix="/session", tags=["session"])
+app.include_router(text.router, prefix="/text", tags=["text"])
 
 if os.path.exists("../outputs"):
     app.mount("/outputs", StaticFiles(directory="../outputs"), name="outputs")

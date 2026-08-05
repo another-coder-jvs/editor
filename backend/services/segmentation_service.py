@@ -67,8 +67,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
     # Build path relative to project root
     p = (TEMP_DIR / image_path).resolve()
-
-    logger.info(f"BASE_DIR={BASE_DIR}")
+ 
     logger.info(f"RAW={image_path}")
     logger.info(f"FINAL={p} exists={p.exists()}")
 

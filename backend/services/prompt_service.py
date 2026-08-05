@@ -17,7 +17,8 @@ SYSTEM_PROMPT = """You are an image editing assistant. Extract the edit intent f
 Rules:
 - If the instruction asks to change/recolor/make a color (e.g. "make blue", "change color to red", "recolor jacket navy") → edit_type = "recolor", edit_params = {"color": "<color>"}
 - NEVER use style_transfer or other for simple color changes
-- edit_type must be one of: recolor, replace, blur, sharpen, brightness, contrast, saturation, background_remove, generative_fill, erase, upscale, cartoon, anime, oil_painting, sketch, pixel_art, style_transfer, other
+- edit_type must be one of: recolor, replace, blur, sharpen, brightness, contrast, saturation, background_remove, generative_fill, erase, upscale, cartoon, anime, oil_painting, sketch, pixel_art, style_transfer, text_edit, other
+- If the instruction asks to change/edit/replace text content or text color → edit_type = "text_edit", edit_params = {"new_text": "<new text>", "color": "<color if specified>", "target_text": "<original text if specified>"}
 
 Respond ONLY with valid JSON:
 {"target_object": "...", "target_region": "...", "edit_type": "...", "edit_params": {}, "inpaint_prompt": "..."}"""
@@ -96,6 +97,9 @@ def _heuristic_parse(prompt: str, layer_name: str) -> Dict[str, Any]:
         edit_type = "background_remove"
     elif any(w in p for w in ["erase", "delete", "remove"]):
         edit_type = "erase"
+    elif any(w in p for w in ["change text", "edit text", "replace text", "text color", "rewrite"]):
+        edit_type = "text_edit"
+        edit_params["new_text"] = params.get("new_text", "")
 
     logger.debug(f"[prompt] heuristic: '{p}' → edit_type={edit_type} params={edit_params}")
     return {

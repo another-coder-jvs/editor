@@ -59,6 +59,8 @@ class EditRequest(BaseModel):
     strength: float = 0.75
     guidance_scale: float = 7.5
     steps: int = 20
+    edit_type: str | None = None
+    edit_params: dict | None = None
 
 
 class EditResponse(BaseModel):

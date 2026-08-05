@@ -34,6 +34,8 @@ export async function editLayer(payload: {
   strength?: number
   guidance_scale?: number
   steps?: number
+  edit_type?: string
+  edit_params?: Record<string, string>
 }): Promise<{ layer_id: string; edited_png_path: string; session_id: string }> {
   const { data } = await api.post('/edit', payload)
   return data

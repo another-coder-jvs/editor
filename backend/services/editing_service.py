@@ -13,6 +13,7 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 
 from services.model_manager import model_manager, DEVICE
+from services.text_service import edit_text_layer
 from services.prompt_service import parse_edit_prompt
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,13 @@ def edit_layer(
     session_id: str, layer_id: str, layer_name: str,
     layer_png_path: str, original_image_path: str, mask_path: str,
     prompt: str, strength: float = 0.75, guidance_scale: float = 7.5, steps: int = 20,
+    edit_type_override: str | None = None, edit_params_override: dict | None = None,
 ) -> str:
     logger.info(f"[editing] session={session_id} layer='{layer_name}' prompt='{prompt}'")
 
     parsed       = parse_edit_prompt(prompt, layer_name)
-    edit_type    = parsed.get("edit_type", "other")
-    edit_params  = parsed.get("edit_params", {})
+    edit_type    = edit_type_override or parsed.get("edit_type", "other")
+    edit_params  = edit_params_override or parsed.get("edit_params", {})
     inpaint_prompt = parsed.get("inpaint_prompt", prompt)
     logger.info(f"[editing] edit_type={edit_type} params={edit_params}")
 
@@ -80,6 +82,7 @@ def edit_layer(
         "sketch":            _sketch,
         "pixel_art":         _pixel_art,
         "upscale":           _upscale,
+        "text_edit":         _text_edit,
         "replace":           _inpaint,
         "generative_fill":   _inpaint,
         "anime":             _inpaint,
@@ -224,6 +227,11 @@ def _upscale(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
 
 
 # ── AI inpainting ─────────────────────────────────────────────────────────────
+
+def _text_edit(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
+    logger.info(f"[editing/text_edit] params={params}")
+    return edit_text_layer(img, params)
+
 
 def _run_img2img_on_layer(layer_img: Image.Image, prompt: str, strength: float,
                           guidance_scale: float, steps: int) -> Image.Image:
