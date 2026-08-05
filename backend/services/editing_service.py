@@ -36,9 +36,14 @@ def edit_layer(
     logger.info(f"[editing] edit_type={edit_type} params={edit_params}")
 
     # Check available RAM
-    import psutil
-    _available_gb = psutil.virtual_memory().available / 1024**3
-    _low_ram = _available_gb < 5.5
+    if DEVICE == "cuda":
+        import torch as _torch
+        _available_gb = _torch.cuda.get_device_properties(0).total_memory / 1024**3
+        _low_ram = _available_gb < 6.0
+    else:
+        import psutil
+        _available_gb = psutil.virtual_memory().available / 1024**3
+        _low_ram = _available_gb < 5.5
 
     GENERATIVE_TYPES = {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 

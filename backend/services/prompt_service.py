@@ -32,7 +32,7 @@ def parse_edit_prompt(user_prompt: str, layer_name: str) -> Dict[str, Any]:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Layer: {layer_name}\nUser instruction: {user_prompt}"},
         ]
-        output = llm(messages, max_new_tokens=256, do_sample=False)
+        output = llm(messages, max_new_tokens=256, do_sample=False, max_length=None)
         raw = output[0]["generated_text"]
         if isinstance(raw, list):
             raw = raw[-1].get("content", "")
