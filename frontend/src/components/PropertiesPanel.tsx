@@ -61,30 +61,43 @@ export const PropertiesPanel: React.FC = () => {
     pushHistory()
 
     try {
-      // Load the layer image onto an offscreen canvas
-      const layerUrl = `${baseUrl}${selectedLayer.png_path}`
+      // Fetch via blob to bypass CORS (ngrok blocks crossOrigin image requests)
+      const layerUrl = selectedLayer.png_path.startsWith('blob:')
+        ? selectedLayer.png_path
+        : `${baseUrl}${selectedLayer.png_path}`
+      const blob = await fetch(layerUrl, { headers: { 'ngrok-skip-browser-warning': '1' } }).then(r => r.blob())
+      const objectUrl = URL.createObjectURL(blob)
       const img = await new Promise<HTMLImageElement>((res, rej) => {
-        const el = new Image(); el.crossOrigin = 'anonymous'
+        const el = new Image()
         el.onload = () => res(el); el.onerror = rej
-        el.src = layerUrl
+        el.src = objectUrl
       })
 
       const canvas = document.createElement('canvas')
       canvas.width = img.naturalWidth; canvas.height = img.naturalHeight
       const ctx = canvas.getContext('2d')!
       ctx.drawImage(img, 0, 0)
+      URL.revokeObjectURL(objectUrl)
+
+      // Layer bbox offset within the full image (detection coords are full-image)
+      const offX = selectedLayer.bbox.x
+      const offY = selectedLayer.bbox.y
 
       for (const [i, newText] of edits) {
         const r = textRegions[+i]
         if (!r) continue
-        const [x1, y1, x2, y2] = r.bbox
-        const w = x2 - x1, h = y2 - y1
+        // Convert full-image coords → layer-local coords
+        const lx1 = r.bbox[0] - offX
+        const ly1 = r.bbox[1] - offY
+        const lx2 = r.bbox[2] - offX
+        const ly2 = r.bbox[3] - offY
+        const w = lx2 - lx1, h = ly2 - ly1
         if (w < 1 || h < 1) continue
 
         // Sample background: average rows just above and below the bbox
         const pad = Math.max(2, Math.floor(h * 0.3))
-        const above = ctx.getImageData(x1, Math.max(0, y1 - pad), w, pad)
-        const below = ctx.getImageData(x1, Math.min(canvas.height - pad, y2), w, pad)
+        const above = ctx.getImageData(lx1, Math.max(0, ly1 - pad), w, pad)
+        const below = ctx.getImageData(lx1, Math.min(canvas.height - pad, ly2), w, pad)
         let rSum = 0, gSum = 0, bSum = 0, count = 0
         for (const src of [above.data, below.data]) {
           for (let p = 0; p < src.length; p += 4) {
@@ -95,23 +108,22 @@ export const PropertiesPanel: React.FC = () => {
         const bgG = count ? Math.round(gSum/count) : 0
         const bgB = count ? Math.round(bSum/count) : 0
 
-        // Erase original text with background color
+        // Erase original text with sampled background
         ctx.fillStyle = `rgb(${bgR},${bgG},${bgB})`
-        ctx.fillRect(x1, y1, w, h)
+        ctx.fillRect(lx1, ly1, w, h)
 
         // Draw new text with matched color and size
         const [tr, tg, tb] = r.color
         ctx.fillStyle = `rgb(${tr},${tg},${tb})`
-        const fontSize = r.font_size
-        ctx.font = `bold ${fontSize}px sans-serif`
+        ctx.font = `bold ${r.font_size}px sans-serif`
         ctx.textBaseline = 'middle'
         ctx.textAlign = 'center'
-        ctx.fillText(newText, x1 + w / 2, y1 + h / 2, w)
+        ctx.fillText(newText, lx1 + w / 2, ly1 + h / 2, w)
       }
 
       // Export canvas to blob URL and update layer in-place (no backend round-trip)
-      const blob = await new Promise<Blob>((res) => canvas.toBlob(b => res(b!), 'image/png'))
-      const blobUrl = URL.createObjectURL(blob)
+      const canvasBlob = await new Promise<Blob>((res) => canvas.toBlob(b => res(b!), 'image/png'))
+      const blobUrl = URL.createObjectURL(canvasBlob)
       const textPrompt = edits.map(([i, v]) => `"${textRegions[+i]?.text}" → "${v}"`).join(', ')
       updateLayer(selectedLayer.id, { png_path: blobUrl, history: [...selectedLayer.history, textPrompt] })
       toast.success('Text updated!')

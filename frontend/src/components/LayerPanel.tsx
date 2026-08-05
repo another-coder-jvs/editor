@@ -67,7 +67,7 @@ const LayerItem: React.FC<LayerItemProps> = ({
   // const thumbUrl = layer.png_path
   //   ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
   //   : null
-  const thumbUrl = useBlobUrl(layer.png_path ? `${API_BASE}${layer.png_path}` : null)
+  const thumbUrl = useBlobUrl(layer.png_path ? (layer.png_path.startsWith("blob:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null)
 
   return (
     <div
