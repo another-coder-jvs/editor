@@ -40,7 +40,7 @@ def edit_layer(
     _available_gb = psutil.virtual_memory().available / 1024**3
     _low_ram = _available_gb < 5.5
 
-    GENERATIVE_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
+    GENERATIVE_TYPES = {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     if edit_type == "style_transfer" and "color" in edit_params:
         edit_type = "recolor"
@@ -60,7 +60,7 @@ def edit_layer(
     out_path = TEMP_DIR / session_id / f"{layer_id}_edited_{out_id}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    AI_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
+    AI_TYPES = {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     handlers = {
         "recolor":           _recolor,
@@ -95,7 +95,7 @@ def edit_layer(
         import gc
         if edit_type == "style_transfer":
             model_manager.unload_img2img_pipe()
-        elif edit_type in {"replace", "generative_fill", "anime", "oil_painting", "other"}:
+        elif edit_type in {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other"}:
             model_manager.unload_inpaint_pipe()
         gc.collect()
     else:
@@ -108,29 +108,14 @@ def edit_layer(
 
 # ── Non-AI edits ──────────────────────────────────────────────────────────────
 
-def _recolor(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
+def _recolor(img: Image.Image, params: Dict[str, Any], original_image_path: str = "",
+             mask_path: str = "", prompt: str = "", strength: float = 0.85,
+             guidance_scale: float = 7.5, steps: int = 20) -> Image.Image:
     color_name = params.get("color", "blue")
-    logger.debug(f"[editing/recolor] color={color_name}")
-    color_map = {
-        "red":(0,100,100),"blue":(220,100,100),"green":(120,100,100),
-        "black":(0,0,0),"white":(0,0,100),"yellow":(60,100,100),
-        "orange":(30,100,100),"purple":(270,100,100),"pink":(330,80,100),
-        "brown":(20,60,40),"gray":(0,0,50),"grey":(0,0,50),
-        "navy":(225,100,45),"teal":(180,100,60),"cyan":(190,100,80),
-        "magenta":(300,100,80),"violet":(270,80,80),"indigo":(245,100,55),
-    }
-    h_t, s_t, v_t = color_map.get(color_name, (220,100,100))
-    arr = np.array(img.convert("RGB"), dtype=np.float32)
-    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-    alpha = np.array(img)[:,:,3]
-    obj_mask = alpha > 30
-    hsv[:,:,0][obj_mask] = h_t / 2
-    if s_t > 0: hsv[:,:,1][obj_mask] = s_t / 100 * 255
-    if v_t < 100: hsv[:,:,2][obj_mask] = v_t / 100 * 255
-    recolored = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB).astype(np.uint8)
-    result = Image.fromarray(recolored).convert("RGBA")
-    result.putalpha(img.getchannel("A"))
-    return result
+    logger.info(f"[editing/recolor] routing to inpaint pipeline, color={color_name}")
+    inpaint_prompt = prompt or f"{color_name} colored object, photorealistic, same texture and lighting"
+    return _inpaint(img, original_image_path, mask_path, inpaint_prompt,
+                    strength, guidance_scale, steps, params)
 
 
 def _blur(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
