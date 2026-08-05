@@ -18,7 +18,7 @@ TEMP_DIR = config.TEMP_DIR or  Path(__file__).resolve().parents[2] / "temp"
 def get_latest_session():
     logger.info(f"Checking Dir : {TEMP_DIR}")
     if not TEMP_DIR.exists():
-        return JSONResponse({"session": None})
+        return {"session": None}
 
     best_dir = None
     best_mtime = 0.0
@@ -35,14 +35,14 @@ def get_latest_session():
             best_dir = d
     logger.info(f"best_dir : {best_dir}")
     if best_dir is None:
-        return JSONResponse({"session": None})
+        return {"session": None}
 
     try:
         meta = json.loads((best_dir / "session_meta.json").read_text())
         logger.info(f"meta : {meta}")
     except Exception as e:
         logger.warning(f"[session/latest] failed to read meta: {e}")
-        return JSONResponse({"session": None})
+        return {"session": None}
 
     # Validate all layer PNGs still exist
     for layer in meta.get("layers", []):
@@ -50,13 +50,13 @@ def get_latest_session():
         logger.info(f"Checking : {config.TEMP_DIR}/{png_rel}")
         if not (config.TEMP_DIR / png_rel).exists():
             logger.warning(f"[session/latest] missing layer file {png_rel}, skipping session")
-            return JSONResponse({"session": None})
+            return {"session": None}
 
     # Validate original image exists
     img_path = meta.get("image_path", "").lstrip("/")
     img_abs = (config.TEMP_DIR / img_path).resolve()
     if not img_abs.exists():
-        return JSONResponse({"session": None})
+        return {"session": None}
 
     logger.info(f"[session/latest] restoring session {meta['session_id']}")
     return JSONResponse({"session": meta})
