@@ -233,91 +233,59 @@ def _upscale(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
 
 # ── AI inpainting ─────────────────────────────────────────────────────────────
 
+def _run_img2img_on_layer(layer_img: Image.Image, prompt: str, strength: float,
+                          guidance_scale: float, steps: int) -> Image.Image:
+    """Run img2img on the layer crop (RGB), preserve original alpha."""
+    pipe = model_manager.get_img2img_pipe()
+    orig_alpha = layer_img.getchannel("A")
+    rgb = layer_img.convert("RGB")
+    w, h = rgb.size
+    if DEVICE == "cpu":
+        scale = min(512 / w, 512 / h, 1.0)
+        w, h = int(w * scale), int(h * scale)
+    w8, h8 = max((w // 8) * 8, 8), max((h // 8) * 8, 8)
+    rgb_r = rgb.resize((w8, h8), Image.LANCZOS)
+    result = pipe(prompt=prompt, image=rgb_r, strength=strength,
+                  guidance_scale=guidance_scale, num_inference_steps=steps).images[0]
+    result = result.resize(layer_img.size, Image.LANCZOS).convert("RGBA")
+    result.putalpha(orig_alpha)
+    return result
+
+
 def _inpaint(
     layer_img: Image.Image, original_image_path: str, mask_path: str,
     prompt: str, strength: float, guidance_scale: float, steps: int,
     params: Dict[str, Any],
 ) -> Image.Image:
     logger.info(f"[editing/inpaint] prompt='{prompt}' strength={strength} steps={steps}")
-    logger.info("[editing/inpaint] loading inpainting pipeline…")
     pipe = model_manager.get_inpaint_pipe()
-
-    orig = Image.open(original_image_path).convert("RGB")
-    mask = Image.open(mask_path).convert("L")
-    w, h = orig.size
-    # On CPU, downscale to 512px max to avoid OOM
+    orig_alpha = layer_img.getchannel("A")
+    rgb = layer_img.convert("RGB")
+    mask = Image.fromarray(np.array(orig_alpha))
+    w, h = rgb.size
     if DEVICE == "cpu":
-        max_side = 512
-        scale_factor = min(max_side / w, max_side / h, 1.0)
-        w, h = int(w * scale_factor), int(h * scale_factor)
-    w8, h8 = (w // 8) * 8, (h // 8) * 8
-    logger.debug(f"[editing/inpaint] resizing to {w8}x{h8} (multiple of 8)")
-
-    orig_r = orig.resize((w8, h8), Image.LANCZOS)
+        scale = min(512 / w, 512 / h, 1.0)
+        w, h = int(w * scale), int(h * scale)
+    w8, h8 = max((w // 8) * 8, 8), max((h // 8) * 8, 8)
+    rgb_r  = rgb.resize((w8, h8), Image.LANCZOS)
     mask_r = mask.resize((w8, h8), Image.NEAREST)
-
-    logger.info("[editing/inpaint] running diffusion pipeline…")
-    result = pipe(
-        prompt=prompt, image=orig_r, mask_image=mask_r,
-        strength=strength, guidance_scale=guidance_scale,
-        num_inference_steps=steps,
-    ).images[0]
+    logger.info("[editing/inpaint] running diffusion pipeline...")
+    result = pipe(prompt=prompt, image=rgb_r, mask_image=mask_r,
+                  strength=strength, guidance_scale=guidance_scale,
+                  num_inference_steps=steps).images[0]
     logger.info("[editing/inpaint] diffusion complete")
+    result = result.resize(layer_img.size, Image.LANCZOS).convert("RGBA")
+    result.putalpha(orig_alpha)
+    return result
 
-    result = result.resize((w, h), Image.LANCZOS)
-    orig_rgba   = orig.convert("RGBA")
-    result_rgba = result.convert("RGBA")
-    mask_full   = mask.resize((w, h), Image.NEAREST)
-    composited  = Image.composite(result_rgba, orig_rgba, mask_full)
-    logger.info("[editing/inpaint] composited result ready")
-    return composited
 
 def _style_transfer(
-    layer_img: Image.Image,
-    original_image_path: str,
-    mask_path: str,          # unused, kept for unified interface
-    prompt: str,
-    strength: float,
-    guidance_scale: float,
-    steps: int,
+    layer_img: Image.Image, original_image_path: str, mask_path: str,
+    prompt: str, strength: float, guidance_scale: float, steps: int,
     params: Dict[str, Any],
 ) -> Image.Image:
-    logger.info(
-        f"[editing/style_transfer] prompt='{prompt}' "
-        f"strength={strength} guidance={guidance_scale} steps={steps}"
-    )
-
+    logger.info(f"[editing/style_transfer] prompt='{prompt}' strength={strength}")
     logger.info("[editing/style_transfer] loading img2img pipeline...")
-    pipe = model_manager.get_img2img_pipe()
-
-    image = Image.open(original_image_path).convert("RGB")
-
-    w, h = image.size
-    # On CPU, downscale to 512px max to avoid OOM
-    if DEVICE == "cpu":
-        max_side = 512
-        scale_factor = min(max_side / w, max_side / h, 1.0)
-        w, h = int(w * scale_factor), int(h * scale_factor)
-
-    w8, h8 = (w // 8) * 8, (h // 8) * 8
-    image = image.resize((w8, h8), Image.LANCZOS)
-
-    logger.info("[editing/style_transfer] running img2img pipeline...")
-
-    result = pipe(
-        prompt=prompt,
-        image=image,
-        strength=strength,
-        guidance_scale=guidance_scale,
-        num_inference_steps=steps,
-    ).images[0]
-
-    result = result.resize((w, h), Image.LANCZOS)
-
+    result = _run_img2img_on_layer(layer_img, prompt, strength, guidance_scale, steps)
     logger.info("[editing/style_transfer] completed")
-
-    # return result.convert("RGBA")
-    alpha = layer_img.getchannel("A").resize((w, h), Image.LANCZOS)
-    result = result.convert("RGBA")
-    result.putalpha(alpha)
     return result
