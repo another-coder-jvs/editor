@@ -62,6 +62,21 @@ async def edit(req: EditRequest):
     try:
         rel = Path(edited_path).relative_to(TEMP_DIR)
     except ValueError:
-        rel = Path(*Path(edited_path).parts[-2:])  # fallback: session_id/filename
+        rel = Path(*Path(edited_path).parts[-2:])
     edited_path = "/temp/" + str(rel).replace("\\", "/")
+
+    # Persist updated png_path to session_meta.json so refresh restores the edit
+    import json
+    meta_file = session_dir / "session_meta.json"
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text())
+            for layer in meta.get("layers", []):
+                if layer.get("id") == req.layer_id:
+                    layer["png_path"] = edited_path
+                    break
+            meta_file.write_text(json.dumps(meta))
+        except Exception as e:
+            logger.warning(f"[edit] failed to update session_meta: {e}")
+
     return EditResponse(layer_id=req.layer_id, edited_png_path=edited_path, session_id=req.session_id)
