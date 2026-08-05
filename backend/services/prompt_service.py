@@ -12,16 +12,15 @@ from services.model_manager import model_manager
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an image editing assistant.
-Given a user's edit instruction, extract:
-- target_object: the main object being edited
-- target_region: the specific part (or "whole")
-- edit_type: one of [recolor, replace, style_transfer, blur, sharpen, brightness,
-  contrast, saturation, background_remove, generative_fill, erase, upscale,
-  cartoon, anime, oil_painting, sketch, pixel_art, expand, clone, other]
-- edit_params: dict of relevant parameters (e.g. {"color": "blue"})
-- inpaint_prompt: short positive prompt for the inpainting model
-Respond ONLY with valid JSON."""
+SYSTEM_PROMPT = """You are an image editing assistant. Extract the edit intent from the instruction.
+
+Rules:
+- If the instruction asks to change/recolor/make a color (e.g. "make blue", "change color to red", "recolor jacket navy") → edit_type = "recolor", edit_params = {"color": "<color>"}
+- NEVER use style_transfer or other for simple color changes
+- edit_type must be one of: recolor, replace, blur, sharpen, brightness, contrast, saturation, background_remove, generative_fill, erase, upscale, cartoon, anime, oil_painting, sketch, pixel_art, style_transfer, other
+
+Respond ONLY with valid JSON:
+{"target_object": "...", "target_region": "...", "edit_type": "...", "edit_params": {}, "inpaint_prompt": "..."}"""
 
 
 def parse_edit_prompt(user_prompt: str, layer_name: str) -> Dict[str, Any]:
@@ -41,6 +40,14 @@ def parse_edit_prompt(user_prompt: str, layer_name: str) -> Dict[str, Any]:
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group())
+            # Correct misclassified color edits
+            color_words = ["red","blue","green","black","white","yellow","orange","purple","pink","brown","gray","grey","navy","royal blue","teal","cyan","magenta","violet","indigo"]
+            if result.get("edit_type") not in ("recolor",):
+                for c in color_words:
+                    if c in user_prompt.lower():
+                        result["edit_type"] = "recolor"
+                        result.setdefault("edit_params", {})["color"] = result.get("edit_params", {}).get("color", c)
+                        break
             logger.info(f"[prompt] LLM parsed: edit_type={result.get('edit_type')} params={result.get('edit_params')}")
             return result
         logger.warning("[prompt] LLM output had no JSON, falling back to heuristic")
@@ -57,11 +64,12 @@ def _heuristic_parse(prompt: str, layer_name: str) -> Dict[str, Any]:
     edit_type = "other"
     edit_params: Dict[str, Any] = {}
 
-    color_words = ["red","blue","green","black","white","yellow","orange","purple","pink","brown","gray","grey"]
+    color_words = ["red","blue","green","black","white","yellow","orange","purple","pink","brown","gray","grey","navy","teal","cyan","magenta","violet","indigo"]
+    color_aliases = {"navy": "blue", "royal blue": "blue", "teal": "green", "indigo": "purple", "violet": "purple", "magenta": "pink", "cyan": "blue"}
     for color in color_words:
         if color in p:
             edit_type = "recolor"
-            edit_params["color"] = color
+            edit_params["color"] = color_aliases.get(color, color)
             break
 
     if any(w in p for w in ["replace", "change to", "convert", "swap"]):

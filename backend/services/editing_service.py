@@ -116,6 +116,8 @@ def _recolor(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
         "black":(0,0,0),"white":(0,0,100),"yellow":(60,100,100),
         "orange":(30,100,100),"purple":(270,100,100),"pink":(330,80,100),
         "brown":(20,60,40),"gray":(0,0,50),"grey":(0,0,50),
+        "navy":(225,100,45),"teal":(180,100,60),"cyan":(190,100,80),
+        "magenta":(300,100,80),"violet":(270,80,80),"indigo":(245,100,55),
     }
     h_t, s_t, v_t = color_map.get(color_name, (220,100,100))
     arr = np.array(img.convert("RGB"), dtype=np.float32)
