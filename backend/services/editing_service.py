@@ -34,24 +34,23 @@ def edit_layer(
     inpaint_prompt = parsed.get("inpaint_prompt", prompt)
     logger.info(f"[editing] edit_type={edit_type} params={edit_params}")
 
-    # On low-RAM systems (<6GB), never load heavy diffusion models
+    # Check available RAM
     import psutil
     _available_gb = psutil.virtual_memory().available / 1024**3
     _low_ram = _available_gb < 5.5
 
-    # Reroute style_transfer: color → recolor, or low RAM → cartoon (no model)
-    if edit_type == "style_transfer":
-        if "color" in edit_params:
-            edit_type = "recolor"
-            logger.info("[editing] style_transfer+color → recolor")
-        elif _low_ram:
-            edit_type = "cartoon"
-            logger.info(f"[editing] style_transfer → cartoon (low RAM: {_available_gb:.1f}GB free)")
+    GENERATIVE_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
-    # On low RAM, reroute all heavy AI types to safe fallbacks
-    if _low_ram and edit_type in {"replace", "generative_fill", "anime", "oil_painting", "other"}:
-        edit_type = "cartoon"
-        logger.warning(f"[editing] AI edit skipped (only {_available_gb:.1f}GB RAM free) → cartoon fallback")
+    if edit_type == "style_transfer" and "color" in edit_params:
+        edit_type = "recolor"
+        logger.info("[editing] style_transfer+color → recolor")
+    elif _low_ram and edit_type in GENERATIVE_TYPES:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail=f"Not enough RAM for generative edit ({_available_gb:.1f}GB free, need 6GB+). "
+                   f"Supported on this machine: recolor, blur, sharpen, brightness, contrast, cartoon, sketch, pixel_art."
+        )
 
     layer_img = Image.open(layer_png_path).convert("RGBA")
     logger.debug(f"[editing] layer image size: {layer_img.size}")

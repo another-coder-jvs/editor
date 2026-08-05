@@ -16,11 +16,13 @@ from PIL import Image
 from services.model_manager import model_manager
 from schemas import BoundingBox, LayerData
  
-
+from utils import config
 BASE_DIR = Path(__file__).resolve().parents[2]  
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+# TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+TEMP_DIR = config.TEMP_DIR
+
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -65,7 +67,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     image_path = str(image_path).lstrip("/")
 
     # Build path relative to project root
-    p = (BASE_DIR / image_path).resolve()
+    p = (TEMP_DIR / image_path).resolve()
 
     logger.info(f"BASE_DIR={BASE_DIR}")
     logger.info(f"RAW={image_path}")

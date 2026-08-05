@@ -15,7 +15,8 @@ from services.progress_store import set_progress
 
 router = APIRouter()
 
-TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+# TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+TEMP_DIR = "../drive/MyDrive/project_folders/temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -7,11 +7,11 @@ from pathlib import Path
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-
+from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+TEMP_DIR = config.TEMP_DIR or  Path(__file__).resolve().parents[2] / "temp" 
 
 
 @router.get("/latest")
@@ -45,13 +45,13 @@ def get_latest_session():
     # Validate all layer PNGs still exist
     for layer in meta.get("layers", []):
         png_rel = layer.get("png_path", "").lstrip("/")
-        if not (Path(__file__).resolve().parents[2] / png_rel).exists():
+        if not (config.TEMP_DIR / png_rel).exists():
             logger.warning(f"[session/latest] missing layer file {png_rel}, skipping session")
             return JSONResponse({"session": None})
 
     # Validate original image exists
     img_path = meta.get("image_path", "").lstrip("/")
-    img_abs = (Path(__file__).resolve().parents[2] / img_path).resolve()
+    img_abs = (config.TEMP_DIR / img_path).resolve()
     if not img_abs.exists():
         return JSONResponse({"session": None})
 

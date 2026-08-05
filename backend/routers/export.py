@@ -41,7 +41,9 @@ async def export_image(req: ExportRequest):
         out_path = OUTPUTS_DIR / out_name
 
         if fmt in ("jpg", "jpeg"):
-            merged.convert("RGB").save(str(out_path), quality=95)
+            bg = Image.new("RGB", merged.size, (255, 255, 255))
+            bg.paste(merged, mask=merged.getchannel("A"))
+            bg.save(str(out_path), quality=95)
         elif fmt == "webp":
             merged.save(str(out_path), format="WEBP", quality=90)
         else:

@@ -24,16 +24,16 @@ logger.info(f"Imported : StaticFiles !")
 
 from routers import detect, segment, layers, edit, merge, project, export, progress, session
 from services.model_manager import ModelManager
-
+from utils import config
 logger.info("Files imported !")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting AI Image Editor backend...")
-    os.makedirs("../outputs", exist_ok=True)
-    os.makedirs("../temp", exist_ok=True)
-    os.makedirs("../projects", exist_ok=True)
-    os.makedirs("../weights", exist_ok=True)
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    os.makedirs(config.TEMP_DIR, exist_ok=True)
+    os.makedirs(config.PROJECTS_DIR, exist_ok=True)
+    os.makedirs(config.WEIGHT_DIR, exist_ok=True)
     yield
     logger.info("Shutting down...")
 
@@ -64,7 +64,7 @@ app.include_router(session.router, prefix="/session", tags=["session"])
 
 if os.path.exists("../outputs"):
     app.mount("/outputs", StaticFiles(directory="../outputs"), name="outputs")
-if os.path.exists("../temp"):
+if os.path.exists("../drive/MyDrive/project_folders/temp"):
     app.mount("/temp", StaticFiles(directory="../temp"), name="temp")
 
 

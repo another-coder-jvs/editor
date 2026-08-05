@@ -1,0 +1,327 @@
+{
+  "session_id": "435f1acaed7f43419cf91ee873eb910d",
+  "project_name": "my_project",
+  "original_image_path": "temp/435f1acaed7f43419cf91ee873eb910d/test_image_with_bike.jpg",
+  "layers": [
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_0_57f203",
+      "name": "person",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_0_57f203_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_0_57f203_layer.png",
+      "bbox": {
+        "x": 352.7,
+        "y": 22.21,
+        "width": 158.69,
+        "height": 313.05
+      },
+      "z_index": 12,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 2.47,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_1_2c687e",
+      "name": "road floor",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_1_2c687e_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_1_2c687e_layer.png",
+      "bbox": {
+        "x": 0.62,
+        "y": 304.47,
+        "width": 537.52,
+        "height": 53.69
+      },
+      "z_index": 11,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_2_f681b4",
+      "name": "vehicle",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_2_f681b4_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_2_f681b4_layer.png",
+      "bbox": {
+        "x": 130.11,
+        "y": 103.42,
+        "width": 385.61,
+        "height": 238.89
+      },
+      "z_index": 10,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_3_534a53",
+      "name": "building wall",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_3_534a53_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_3_534a53_layer.png",
+      "bbox": {
+        "x": -0.04,
+        "y": 1.17,
+        "width": 538.45,
+        "height": 324.41
+      },
+      "z_index": 9,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 1.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_4_42c367",
+      "name": "window",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_4_42c367_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_4_42c367_layer.png",
+      "bbox": {
+        "x": 0.68,
+        "y": 2.44,
+        "width": 106.56,
+        "height": 184.38
+      },
+      "z_index": 8,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_5_46463e",
+      "name": "shadow",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_5_46463e_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_5_46463e_layer.png",
+      "bbox": {
+        "x": -0.8,
+        "y": 314.35,
+        "width": 537.4,
+        "height": 44.94
+      },
+      "z_index": 7,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_6_50ab3c",
+      "name": "window 2",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_6_50ab3c_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_6_50ab3c_layer.png",
+      "bbox": {
+        "x": -0.57,
+        "y": 0.28,
+        "width": 498.89,
+        "height": 194.0
+      },
+      "z_index": 6,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_7_5c5187",
+      "name": "shadow 2",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_7_5c5187_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_7_5c5187_layer.png",
+      "bbox": {
+        "x": 12.72,
+        "y": 326.29,
+        "width": 442.22,
+        "height": 21.37
+      },
+      "z_index": 5,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_8_504698",
+      "name": "window 3",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_8_504698_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_8_504698_layer.png",
+      "bbox": {
+        "x": 375.54,
+        "y": 1.25,
+        "width": 123.49,
+        "height": 193.56
+      },
+      "z_index": 4,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_9_d72dc1",
+      "name": "window 4",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_9_d72dc1_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_9_d72dc1_layer.png",
+      "bbox": {
+        "x": 0.25,
+        "y": 37.56,
+        "width": 102.91,
+        "height": 147.95
+      },
+      "z_index": 3,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_10_d2bb52",
+      "name": "wall",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_10_d2bb52_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_10_d2bb52_layer.png",
+      "bbox": {
+        "x": -1.1,
+        "y": 178.6,
+        "width": 534.18,
+        "height": 146.61
+      },
+      "z_index": 2,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    },
+    {
+      "id": "435f1acaed7f43419cf91ee873eb910d_11_099090",
+      "name": "window 5",
+      "mask_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_11_099090_mask.png",
+      "png_path": "/temp/435f1acaed7f43419cf91ee873eb910d/435f1acaed7f43419cf91ee873eb910d_11_099090_layer.png",
+      "bbox": {
+        "x": 117.53,
+        "y": 0.7,
+        "width": 126.07,
+        "height": 190.17
+      },
+      "z_index": 1,
+      "visible": true,
+      "opacity": 1.0,
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "scale": {
+        "x": 1.0,
+        "y": 1.0
+      },
+      "rotation": 0.0,
+      "history": [],
+      "locked": false
+    }
+  ],
+  "canvas_width": 539,
+  "canvas_height": 360,
+  "canvas_position": {
+    "x": 0.0,
+    "y": 0.0
+  },
+  "settings": {},
+  "prompts": []
+}
