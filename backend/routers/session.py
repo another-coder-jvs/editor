@@ -5,8 +5,8 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+import shutil
+from fastapi import HTTPException
 from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,3 +60,42 @@ def get_latest_session():
 
     logger.info(f"[session/latest] restoring session {meta['session_id']}")
     return JSONResponse({"session": meta})
+
+
+@router.get("/list")
+def list_sessions():
+    if not TEMP_DIR.exists():
+        return {"sessions": []}
+    sessions = []
+    for d in sorted(TEMP_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        meta_file = d / "session_meta.json"
+        if not d.is_dir() or not meta_file.exists():
+            continue
+        try:
+            meta = json.loads(meta_file.read_text())
+            sessions.append({
+                "session_id": meta["session_id"],
+                "image_path": meta.get("image_path", ""),
+                "layer_count": len(meta.get("layers", [])),
+                "mtime": meta_file.stat().st_mtime,
+            })
+        except Exception:
+            continue
+    return {"sessions": sessions}
+
+
+@router.get("/{session_id}")
+def get_session(session_id: str):
+    meta_file = TEMP_DIR / session_id / "session_meta.json"
+    if not meta_file.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    return JSONResponse({"session": json.loads(meta_file.read_text())})
+
+
+@router.delete("/{session_id}")
+def delete_session(session_id: str):
+    session_dir = TEMP_DIR / session_id
+    if not session_dir.exists():
+        raise HTTPException(status_code=404, detail="Session not found")
+    shutil.rmtree(session_dir)
+    return {"status": "deleted"}

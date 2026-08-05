@@ -15,10 +15,12 @@ import { ImageUploader } from './components/ImageUploader'
 import { ExportModal } from './components/ExportModal'
 import { getLatestSession } from './api/client'
 import { baseUrl } from './config'
+import { ProjectManager } from './components/ProjectManager'
 export default function App() {
   useKeyboardShortcuts()
-  const { originalImageUrl, setSession, setLayers } = useEditorStore()
+  const { originalImageUrl, setSession, setLayers, reset } = useEditorStore()
   const [showExport, setShowExport] = useState(false)
+  const [showProjects, setShowProjects] = useState(false)
 
   useEffect(() => {
     if (originalImageUrl) return
@@ -49,7 +51,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-dark-900 text-white select-none">
-      <Toolbar onExport={() => setShowExport(true)} />
+      <Toolbar onExport={() => setShowExport(true)} onOpenProjects={() => setShowProjects(true)} />
       <div className="flex flex-1 overflow-hidden">
         <LayerPanel />
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -60,6 +62,7 @@ export default function App() {
       </div>
       <ProgressBar />
       {showExport && <ExportModal onClose={() => setShowExport(false)} />}
+      {showProjects && <ProjectManager onClose={() => setShowProjects(false)} onNew={() => { reset(); setShowProjects(false) }} />}
       <ToastContainer
         position="bottom-right"
         theme="dark"

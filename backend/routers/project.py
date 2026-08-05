@@ -29,7 +29,19 @@ async def save_project(req: SaveRequest):
     return {"status": "saved", "path": str(project_path)}
 
 
-@router.post("/load")
+@router.get("/list")
+async def list_projects():
+    projects = [p.stem for p in sorted(PROJECTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)]
+    return {"projects": projects}
+
+
+@router.delete("/{project_name}")
+async def delete_project(project_name: str):
+    project_path = PROJECTS_DIR / f"{project_name}.json"
+    if not project_path.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_path.unlink()
+    return {"status": "deleted"}
 async def load_project(req: LoadRequest):
     project_path = PROJECTS_DIR / f"{req.project_name}.json"
     logger.info(f"[project/load] name={req.project_name} path={project_path}")

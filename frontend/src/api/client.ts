@@ -98,3 +98,26 @@ export async function getLatestSession(): Promise<{
   const { data } = await api.get('/session/latest')
   return data
 }
+
+export async function listSessions(): Promise<{ sessions: { session_id: string; image_path: string; layer_count: number; mtime: number }[] }> {
+  const { data } = await api.get('/session/list')
+  return data
+}
+
+export async function loadSession(session_id: string): Promise<{ session: { session_id: string; image_path: string; layers: LayerData[] } }> {
+  const { data } = await api.get(`/session/${session_id}`)
+  return data
+}
+
+export async function deleteSession(session_id: string): Promise<void> {
+  await api.delete(`/session/${session_id}`)
+}
+
+export async function listProjects(): Promise<{ projects: string[] }> {
+  const { data } = await api.get('/project/list')
+  return data
+}
+
+export async function deleteProject(name: string): Promise<void> {
+  await api.delete(`/project/${name}`)
+}

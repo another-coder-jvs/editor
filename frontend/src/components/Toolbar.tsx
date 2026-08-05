@@ -3,7 +3,7 @@ import { useEditorStore } from '../store/editorStore'
 import { Tool } from '../types'
 import {
   Move, Crop, Paintbrush, Eraser, Wand2, MousePointer2,
-  MessageSquare, Undo2, Redo2, Download,
+  MessageSquare, Undo2, Redo2, Download, FolderOpen,
 } from 'lucide-react'
 
 const TOOLS: { id: Tool; icon: React.ReactNode; label: string }[] = [
@@ -18,9 +18,10 @@ const TOOLS: { id: Tool; icon: React.ReactNode; label: string }[] = [
 
 interface Props {
   onExport: () => void
+  onOpenProjects: () => void
 }
 
-export const Toolbar: React.FC<Props> = ({ onExport }) => {
+export const Toolbar: React.FC<Props> = ({ onExport, onOpenProjects }) => {
   const { activeTool, setActiveTool, undo, redo, undoStack, redoStack } = useEditorStore()
 
   return (
@@ -56,6 +57,11 @@ export const Toolbar: React.FC<Props> = ({ onExport }) => {
       </button>
 
       <div className="flex-1" />
+
+      <button title="Projects" onClick={onOpenProjects} className="toolbar-btn text-gray-400 hover:text-white">
+        <FolderOpen size={18} />
+        <span className="text-xs">Projects</span>
+      </button>
 
       <button
         title="Export"
