@@ -108,10 +108,10 @@ def edit_layer(
 
 # ── Non-AI edits ──────────────────────────────────────────────────────────────
 
-def _recolor(img: Image.Image, params: Dict[str, Any], original_image_path: str = "",
-             mask_path: str = "", prompt: str = "", strength: float = 0.85,
-             guidance_scale: float = 7.5, steps: int = 20) -> Image.Image:
-    color_name = params.get("color", "blue")
+def _recolor(img: Image.Image, original_image_path: str, mask_path: str,
+             prompt: str, strength: float, guidance_scale: float, steps: int,
+             params: Dict[str, Any]) -> Image.Image:
+    color_name = params.get("color", "blue") if isinstance(params, dict) else "blue"
     logger.info(f"[editing/recolor] routing to inpaint pipeline, color={color_name}")
     inpaint_prompt = prompt or f"{color_name} colored object, photorealistic, same texture and lighting"
     return _inpaint(img, original_image_path, mask_path, inpaint_prompt,
