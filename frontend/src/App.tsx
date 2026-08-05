@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { ToastContainer, toast } from 'react-toastify'
+// @ts-ignore: side-effect import of CSS without type declarations
 import 'react-toastify/dist/ReactToastify.css'
 
 import { useEditorStore } from './store/editorStore'
@@ -13,7 +14,7 @@ import { ProgressBar } from './components/ProgressBar'
 import { ImageUploader } from './components/ImageUploader'
 import { ExportModal } from './components/ExportModal'
 import { getLatestSession } from './api/client'
-
+import { baseUrl } from './config'
 export default function App() {
   useKeyboardShortcuts()
   const { originalImageUrl, setSession, setLayers } = useEditorStore()
@@ -24,7 +25,8 @@ export default function App() {
     getLatestSession().then(({ session }) => {
       if (!session) return
       const { session_id, image_path, layers } = session
-      const imageUrl = `http://localhost:8000/${image_path.replace(/^\//, '')}`
+      const imageUrl = `${baseUrl}/${image_path.replace(/^\//, '')}` || `http://localhost:8000/${image_path.replace(/^\//, '')}`
+      console.log(`OPENING : ${imageUrl}`)
       const img = new Image()
       img.onload = () => {
         setSession(session_id, image_path, imageUrl, img.naturalWidth, img.naturalHeight)

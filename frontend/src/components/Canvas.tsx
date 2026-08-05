@@ -1,11 +1,11 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
-
+import {baseImagesUrl} from "@/config"
 const CHECKERBOARD = `
   repeating-conic-gradient(#2a2a2a 0% 25%, #1a1a1a 0% 50%)
   0 0 / 20px 20px
 `
-const API_BASE = 'http://localhost:5000'
+const API_BASE = baseImagesUrl || 'http://localhost:5000'
 export const Canvas: React.FC = () => {
   const {
     layers, originalImageUrl, canvasWidth, canvasHeight,

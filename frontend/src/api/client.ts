@@ -1,7 +1,7 @@
 import axios from 'axios'
 import { LayerData, ProgressInfo } from '../types'
-
-const api = axios.create({ baseURL: 'http://localhost:8000' })
+import {baseUrl} from "@/config"
+const api = axios.create({ baseURL: baseUrl || "http://localhost:8000"})
 
 export async function detectObjects(
   file: File,

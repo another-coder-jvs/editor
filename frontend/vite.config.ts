@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
+import path from 'path' 
+let baseUrl = null
 
 export default defineConfig({
   plugins: [react()],
@@ -10,16 +11,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/detect': 'http://localhost:8000',
-      '/segment': 'http://localhost:8000',
-      '/layers': 'http://localhost:8000',
-      '/edit': 'http://localhost:8000',
-      '/merge': 'http://localhost:8000',
-      '/project': 'http://localhost:8000',
-      '/export': 'http://localhost:8000',
-      '/progress': 'http://localhost:8000',
-      '/outputs': 'http://localhost:8000',
-      '/temp': 'http://localhost:8000',
+      '/detect': baseUrl || 'http://localhost:8000',
+      '/segment': baseUrl || 'http://localhost:8000',
+      '/layers': baseUrl || 'http://localhost:8000',
+      '/edit': baseUrl || 'http://localhost:8000',
+      '/merge': baseUrl || 'http://localhost:8000',
+      '/project': baseUrl || 'http://localhost:8000',
+      '/export': baseUrl || 'http://localhost:8000',
+      '/progress': baseUrl || 'http://localhost:8000',
+      '/outputs': baseUrl || 'http://localhost:8000',
+      '/temp': baseUrl || 'http://localhost:8000',
     },
   },
 })

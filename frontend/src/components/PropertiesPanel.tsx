@@ -48,8 +48,9 @@ export const PropertiesPanel: React.FC = () => {
       toast.success('Layer edited!')
       setPrompt('')
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Edit failed'
-      toast.error(msg)
+      const detail = (err as any)?.response?.data?.detail
+      const msg = detail || (err instanceof Error ? err.message : 'Edit failed')
+      toast.error(msg, { autoClose: 6000 })
     } finally {
       setIsEditing(false)
       setProgress(null)

@@ -5,7 +5,9 @@ import {
   Eye, EyeOff, Lock, Unlock, Trash2, Copy,
   ChevronUp, ChevronDown,
 } from 'lucide-react'
-const API_BASE = 'http://localhost:5000'
+
+import { baseImagesUrl } from '@/config'
+const API_BASE = baseImagesUrl || 'http://localhost:5000'
 
 export const LayerPanel: React.FC = () => {
   const {
