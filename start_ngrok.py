@@ -1,3 +1,5 @@
+
+
 from pyngrok import ngrok
 ngrok.set_auth_token("3HRjpFMqfHffIlX0oPqHITBQalK_457XLfBzcPqizqijAyV1p")
 
@@ -10,3 +12,6 @@ tunnel2 = ngrok.connect(
 print(tunnel2.public_url)
 print(tunnel2.public_url+"/docs")
 
+print("Need drive permission to store the masks !" )
+from google.colab import drive
+drive.mount('/content/drive')
