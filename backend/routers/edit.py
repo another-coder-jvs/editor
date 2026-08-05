@@ -12,13 +12,13 @@ from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 TEMP_DIR = config.TEMP_DIR
-BASE_DIR = config.BASE_DIR
+# BASE_DIR = config.BASE_DIR
 
 
 @router.post("", response_model=EditResponse)
 async def edit(req: EditRequest):
     logger.info(f"[edit] session={req.session_id} layer={req.layer_id} prompt='{req.prompt}'")
-    logger.info(f"FILE : : {BASE_DIR} ")
+    # logger.info(f"FILE : : {BASE_DIR} ")
     session_dir = TEMP_DIR / req.session_id
 
     layer_png = next(session_dir.glob(f"{req.layer_id}_layer*.png"), None)
