@@ -57,10 +57,24 @@ def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
       - font_size: int  (optional override)
       - target_text: str  (optional — only replace this specific text)
     """
-    new_text = params.get("new_text", "")
+    import json as _json
+    # Support batch replacements: {"replacements": "[{target_text, new_text}, ...]"}
+    replacements = []
+    if "replacements" in params:
+        try:
+            replacements = _json.loads(params["replacements"])
+        except Exception:
+            pass
+    if not replacements:
+        replacements = [{"target_text": params.get("target_text", "").strip().lower(),
+                         "new_text": params.get("new_text", "")}]
+
     color_override = params.get("color")
     size_override = params.get("font_size")
-    target_text = params.get("target_text", "").strip().lower()
+
+    # Build lookup: target_text.lower() -> new_text
+    replace_map = {r["target_text"].strip().lower(): r["new_text"] for r in replacements if r.get("target_text")}
+    replace_all = next((r["new_text"] for r in replacements if not r.get("target_text")), None)
 
     arr = np.array(img.convert("RGB"))
     results = _get_reader().readtext(arr, detail=1, paragraph=False)
@@ -71,8 +85,10 @@ def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
     for (box, text, conf) in results:
         if conf < 0.35:
             continue
-        if target_text and target_text not in text.lower():
+        matched_new = replace_map.get(text.strip().lower()) or replace_all
+        if matched_new is None:
             continue
+        new_text = matched_new
 
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]

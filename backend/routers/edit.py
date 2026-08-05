@@ -32,9 +32,13 @@ async def edit(req: EditRequest):
         logger.error(f"[edit] mask not found for {req.layer_id}")
         raise HTTPException(status_code=404, detail="Mask not found")
     # Resolve original image path: if req.image_path is absolute use it, otherwise join with BASE_DIR
-    image_path = Path(req.image_path)
-    if not image_path.is_absolute():
-        image_path = TEMP_DIR / req.image_path
+    _raw = req.image_path.lstrip("/")
+    if _raw.startswith("temp/"):
+        _raw = _raw[len("temp/"):]
+    image_path = TEMP_DIR / _raw
+    if not image_path.exists():
+        # fallback: try as absolute
+        image_path = Path(req.image_path)
     logger.info(f"[edit] resolved original image path: {image_path}")
     if not image_path.exists():
         logger.error(f"[edit] original image not found: {image_path}")
