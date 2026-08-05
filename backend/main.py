@@ -64,8 +64,9 @@ app.include_router(session.router, prefix="/session", tags=["session"])
 
 if os.path.exists("../outputs"):
     app.mount("/outputs", StaticFiles(directory="../outputs"), name="outputs")
-if os.path.exists("../drive/MyDrive/project_folders/temp"):
-    app.mount("/temp", StaticFiles(directory="../temp"), name="temp")
+_temp_dir = str(config.TEMP_DIR)
+if os.path.exists(_temp_dir):
+    app.mount("/temp", StaticFiles(directory=_temp_dir), name="temp")
 
 
 @app.get("/health")

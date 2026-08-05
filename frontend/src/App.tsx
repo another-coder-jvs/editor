@@ -25,15 +25,16 @@ export default function App() {
     getLatestSession().then(({ session }) => {
       if (!session) return
       const { session_id, image_path, layers } = session
-      const imageUrl = `${baseUrl}/${image_path.replace(/^\//, '')}` || `http://localhost:8000/${image_path.replace(/^\//, '')}`
+      const imageUrl = `${baseUrl}/temp/${image_path.replace(/^\/temp\//, '').replace(/^\//, '')}`
       console.log(`OPENING : ${imageUrl}`)
       const img = new Image()
-      img.onload = () => {
-        setSession(session_id, image_path, imageUrl, img.naturalWidth, img.naturalHeight)
+      const restore = (w = 1920, h = 1080) => {
+        setSession(session_id, image_path, imageUrl, w, h)
         setLayers(layers)
         toast.info('Resumed last session')
       }
-      img.onerror = () => { /* no-op: fall through to upload screen */ }
+      img.onload = () => restore(img.naturalWidth, img.naturalHeight)
+      img.onerror = () => restore()
       img.src = imageUrl
     }).catch(() => { /* no cache, show uploader */ })
   }, [])

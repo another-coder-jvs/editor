@@ -1,7 +1,10 @@
 import axios from 'axios'
 import { LayerData, ProgressInfo } from '../types'
 import {baseUrl} from "@/config"
-const api = axios.create({ baseURL: baseUrl || "http://localhost:8000"})
+const api = axios.create({
+  baseURL: baseUrl || "http://localhost:8000",
+  headers: { 'ngrok-skip-browser-warning': '1' },
+})
 
 export async function detectObjects(
   file: File,
