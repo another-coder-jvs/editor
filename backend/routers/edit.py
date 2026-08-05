@@ -12,6 +12,7 @@ from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 TEMP_DIR = config.TEMP_DIR
+BASE_DIR = config.BASE_DIR
 
 
 @router.post("", response_model=EditResponse)
