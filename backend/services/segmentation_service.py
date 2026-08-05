@@ -64,7 +64,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     logger.info(f"[segmentation] opening image: {image_path}")
     # image_pil = Image.open(image_path).convert("RGB")
     # image_np  = np.array(image_pil)
-    image_path = str(image_path).lstrip("/")
+    image_path = str(image_path).lstrip("/temp")
 
     # Build path relative to project root
     p = (TEMP_DIR / image_path).resolve()
