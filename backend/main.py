@@ -10,6 +10,7 @@ logger.info("Project started.. ! importing files !")
 
 
 import os
+from pathlib import Path
 logger.info(f"Imported : os !")
 from contextlib import asynccontextmanager
 logger.info(f"Imported : contextlib !")
@@ -65,8 +66,19 @@ app.include_router(session.router, prefix="/session", tags=["session"])
 if os.path.exists("../outputs"):
     app.mount("/outputs", StaticFiles(directory="../outputs"), name="outputs")
 _temp_dir = str(config.TEMP_DIR)
-if os.path.exists(_temp_dir):
-    app.mount("/temp", StaticFiles(directory=_temp_dir), name="temp")
+
+@app.get("/temp/{path:path}")
+def browse_temp(path: str = ""):
+    from fastapi.responses import HTMLResponse, FileResponse
+    from fastapi import HTTPException
+    target = Path(_temp_dir) / path
+    if not target.exists():
+        raise HTTPException(404)
+    if target.is_dir():
+        entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name))
+        items = "".join(f'<li><a href="/temp/{(path + "/" + e.name).lstrip("/")}">{e.name}{"/" if e.is_dir() else ""}</a></li>' for e in entries)
+        return HTMLResponse(f"<h2>/temp/{path}</h2><ul>{items}</ul>")
+    return FileResponse(target)
 
 
 @app.get("/health")
