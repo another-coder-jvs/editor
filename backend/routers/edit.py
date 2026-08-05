@@ -59,5 +59,9 @@ async def edit(req: EditRequest):
         raise
     logger.info(f"[edit] done → {edited_path}")
     set_progress(req.session_id, "edit", 1.0, "Edit complete", done=True)
-    edited_path = "/temp/" + str(Path(edited_path).relative_to(TEMP_DIR)).replace("\\", "/")
+    try:
+        rel = Path(edited_path).relative_to(TEMP_DIR)
+    except ValueError:
+        rel = Path(*Path(edited_path).parts[-2:])  # fallback: session_id/filename
+    edited_path = "/temp/" + str(rel).replace("\\", "/")
     return EditResponse(layer_id=req.layer_id, edited_png_path=edited_path, session_id=req.session_id)

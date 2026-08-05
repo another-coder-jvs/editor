@@ -13,7 +13,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
+from utils import config
+WEIGHTS_DIR = config.WEIGHT_DIR
 WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

@@ -14,7 +14,7 @@ from schemas import LayerData
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+from utils import config
 
 
 def _resolve(png_path: str) -> Path:
@@ -24,7 +24,11 @@ def _resolve(png_path: str) -> Path:
     if p.is_absolute() and p.exists():
         return p
     # strip leading slash and join with project root
-    return BASE_DIR / png_path.lstrip("/")
+    p = Path(png_path)
+    if p.is_absolute(): return p
+    # strip leading /temp/ and resolve against TEMP_DIR
+    rel = png_path.lstrip("/").removeprefix("temp/").removeprefix("temp\\")
+    return config.TEMP_DIR / rel
 
 
 def merge_layers(layers: List[LayerData], canvas_width: int, canvas_height: int) -> Image.Image:

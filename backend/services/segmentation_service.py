@@ -17,7 +17,6 @@ from services.model_manager import model_manager
 from schemas import BoundingBox, LayerData
  
 from utils import config
-BASE_DIR = Path(__file__).resolve().parents[2]  
 logger = logging.getLogger(__name__)
 
 # TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
