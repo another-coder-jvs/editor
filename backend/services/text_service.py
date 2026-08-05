@@ -25,7 +25,6 @@ def _get_reader():
 
 
 def detect_text(img: Image.Image) -> List[Dict]:
-    """Return list of {bbox, text, color, font_size} for each text region."""
     arr = np.array(img.convert("RGB"))
     results = _get_reader().readtext(arr, detail=1, paragraph=False)
     regions = []
@@ -35,30 +34,15 @@ def detect_text(img: Image.Image) -> List[Dict]:
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]
         x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
-        # Sample dominant text color from the bounding box
-        crop = np.array(img.convert("RGB"))[y1:y2, x1:x2]
-        color = _dominant_color(crop) if crop.size > 0 else (255, 255, 255)
+        crop = arr[y1:y2, x1:x2]
+        color = _text_color(crop) if crop.size > 0 else (255, 255, 255)
         font_size = max(8, y2 - y1)
-        regions.append({
-            "bbox": [x1, y1, x2, y2],
-            "text": text,
-            "color": color,
-            "font_size": font_size,
-        })
+        regions.append({"bbox": [x1, y1, x2, y2], "text": text, "color": list(color), "font_size": font_size})
     return regions
 
 
 def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
-    """
-    Replace text in the layer in-place.
-    params keys:
-      - new_text: str  (replace all detected text with this)
-      - color: tuple|str  (optional override color)
-      - font_size: int  (optional override)
-      - target_text: str  (optional — only replace this specific text)
-    """
     import json as _json
-    # Support batch replacements: {"replacements": "[{target_text, new_text}, ...]"}
     replacements = []
     if "replacements" in params:
         try:
@@ -69,18 +53,16 @@ def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
         replacements = [{"target_text": params.get("target_text", "").strip().lower(),
                          "new_text": params.get("new_text", "")}]
 
-    color_override = params.get("color")
-    size_override = params.get("font_size")
-
-    # Build lookup: target_text.lower() -> new_text
     replace_map = {r["target_text"].strip().lower(): r["new_text"] for r in replacements if r.get("target_text")}
     replace_all = next((r["new_text"] for r in replacements if not r.get("target_text")), None)
 
     arr = np.array(img.convert("RGB"))
+    alpha_arr = np.array(img.convert("RGBA"))[:, :, 3]
     results = _get_reader().readtext(arr, detail=1, paragraph=False)
 
+    # Work on a copy; we'll restore background by copying original pixels
     result = img.copy().convert("RGBA")
-    draw = ImageDraw.Draw(result)
+    result_arr = np.array(result)
 
     for (box, text, conf) in results:
         if conf < 0.35:
@@ -88,7 +70,6 @@ def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
         matched_new = replace_map.get(text.strip().lower()) or replace_all
         if matched_new is None:
             continue
-        new_text = matched_new
 
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]
@@ -97,58 +78,65 @@ def edit_text_layer(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
         if w <= 0 or h <= 0:
             continue
 
-        # Sample background color just outside the text box
-        bg_color = _sample_background(arr, x1, y1, x2, y2)
-        text_color = color_override or _dominant_color(arr[y1:y2, x1:x2])
-        font_size = size_override or max(8, h)
+        crop_rgb = arr[y1:y2, x1:x2]
+        text_color = _text_color(crop_rgb)
+        font_size = params.get("font_size") or max(8, h)
 
-        # Paint over original text with background color
-        draw.rectangle([x1, y1, x2, y2], fill=(*bg_color, 255))
+        # ── Erase original text: inpaint the bbox by copying surrounding rows ──
+        pad = max(2, h // 4)
+        above = arr[max(0, y1 - pad):y1, x1:x2]   # rows above
+        below = arr[y2:min(arr.shape[0], y2 + pad), x1:x2]  # rows below
 
-        # Load font and fit text into box
+        if above.size and below.size:
+            bg_fill = np.concatenate([above, below], axis=0).mean(axis=0).astype(np.uint8)
+        elif above.size:
+            bg_fill = above.mean(axis=0).astype(np.uint8)
+        elif below.size:
+            bg_fill = below.mean(axis=0).astype(np.uint8)
+        else:
+            bg_fill = arr[y1, x1]  # fallback: single pixel
+
+        # Fill the bbox region with bg_fill color, preserving original alpha
+        result_arr[y1:y2, x1:x2, :3] = bg_fill
+        result_arr[y1:y2, x1:x2, 3] = alpha_arr[y1:y2, x1:x2]
+
+        # ── Render new text onto a transparent scratch, then composite ──
+        scratch = Image.fromarray(result_arr[y1:y2, x1:x2], "RGBA")
+        draw = ImageDraw.Draw(scratch)
+
         font = _load_font(font_size)
-        render_text = new_text if new_text else text
-        font, render_text = _fit_text(draw, render_text, font, w, font_size)
+        font, render_text = _fit_text(draw, matched_new, font, w, font_size)
 
-        # Center text in box
-        bbox = draw.textbbox((0, 0), render_text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        tx = x1 + (w - tw) // 2
-        ty = y1 + (h - th) // 2
+        bbox_t = draw.textbbox((0, 0), render_text, font=font)
+        tw, th = bbox_t[2] - bbox_t[0], bbox_t[3] - bbox_t[1]
+        tx = (w - tw) // 2
+        ty = (h - th) // 2
 
-        if isinstance(text_color, np.ndarray):
-            text_color = tuple(int(c) for c in text_color)
+        draw.text((tx, ty), render_text, font=font,
+                  fill=(int(text_color[0]), int(text_color[1]), int(text_color[2]), 255))
 
-        draw.text((tx, ty), render_text, font=font, fill=(*text_color, 255))
+        result_arr[y1:y2, x1:x2] = np.array(scratch)
 
-    return result
+    return Image.fromarray(result_arr, "RGBA")
 
 
-def _dominant_color(crop: np.ndarray) -> tuple:
-    """Return the most common non-background color in a crop."""
+def _text_color(crop: np.ndarray) -> tuple:
+    """Cluster pixels into dark/light; return the minority cluster (text) color."""
     if crop.size == 0:
         return (255, 255, 255)
     pixels = crop.reshape(-1, 3).astype(np.float32)
-    # Use the pixel furthest from mid-gray as text color
-    mid = np.array([128, 128, 128])
-    dists = np.linalg.norm(pixels - mid, axis=1)
-    idx = np.argmax(dists)
-    return tuple(int(c) for c in pixels[idx])
-
-
-def _sample_background(arr: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple:
-    """Sample color just outside the bounding box as background estimate."""
-    h, w = arr.shape[:2]
-    pad = 3
-    samples = []
-    for row in [max(0, y1 - pad), min(h - 1, y2 + pad)]:
-        strip = arr[row, max(0, x1):min(w, x2)]
-        if strip.size:
-            samples.append(strip.mean(axis=0))
-    if samples:
-        bg = np.mean(samples, axis=0)
-        return tuple(int(c) for c in bg)
-    return (0, 0, 0)
+    brightness = pixels.mean(axis=1)
+    median_b = np.median(brightness)
+    # Text pixels are the minority — pick the cluster further from median
+    dark = pixels[brightness < median_b]
+    light = pixels[brightness >= median_b]
+    if dark.size == 0:
+        return tuple(int(c) for c in light.mean(axis=0))
+    if light.size == 0:
+        return tuple(int(c) for c in dark.mean(axis=0))
+    # Whichever cluster is smaller is likely the text
+    text_pixels = dark if len(dark) < len(light) else light
+    return tuple(int(c) for c in text_pixels.mean(axis=0))
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
@@ -167,8 +155,8 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int, font_size: int) -> tuple:
-    """Shrink font until text fits within max_width."""
+def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont,
+              max_width: int, font_size: int) -> tuple:
     while font_size > 6:
         bbox = draw.textbbox((0, 0), text, font=font)
         if (bbox[2] - bbox[0]) <= max_width:
