@@ -11,7 +11,8 @@ from schemas import SaveRequest, LoadRequest
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-PROJECTS_DIR = Path(__file__).resolve().parents[2] / "projects"
+from utils import config
+PROJECTS_DIR = config.PROJECTS_DIR
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

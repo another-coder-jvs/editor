@@ -11,7 +11,7 @@ from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = config.TEMP_DIR or  Path(__file__).resolve().parents[2] / "temp" 
+TEMP_DIR = config.TEMP_DIR
 
 
 @router.get("/latest")

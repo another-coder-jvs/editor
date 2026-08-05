@@ -15,8 +15,7 @@ from services.progress_store import set_progress
 
 router = APIRouter()
 from utils import config
-# TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
-TEMP_DIR = config.TEMP_DIR or Path(__file__).resolve().parents[2] / "temp" 
+TEMP_DIR = config.TEMP_DIR
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -17,7 +17,8 @@ from services.progress_store import set_progress
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-OUTPUTS_DIR = Path(__file__).resolve().parents[2] / "outputs"
+from utils import config
+OUTPUTS_DIR = config.OUTPUT_DIR
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 

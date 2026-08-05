@@ -11,7 +11,8 @@ from services.progress_store import set_progress
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+from utils import config
+TEMP_DIR = config.TEMP_DIR
 
 
 @router.post("", response_model=SegmentResponse)

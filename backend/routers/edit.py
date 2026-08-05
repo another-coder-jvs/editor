@@ -8,10 +8,10 @@ from schemas import EditRequest, EditResponse
 from services.editing_service import edit_layer
 from services.progress_store import set_progress
 
+from utils import config
 router = APIRouter()
 logger = logging.getLogger(__name__)
-BASE_DIR = Path(__file__).resolve().parents[2]  
-TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
+TEMP_DIR = config.TEMP_DIR
 
 
 @router.post("", response_model=EditResponse)
@@ -33,8 +33,7 @@ async def edit(req: EditRequest):
     # Resolve original image path: if req.image_path is absolute use it, otherwise join with BASE_DIR
     image_path = Path(req.image_path)
     if not image_path.is_absolute():
-        image_path = BASE_DIR / image_path 
-    image_path = Path(f"{BASE_DIR}\{str(image_path).split("E:\\editor\\")[1]}")
+        image_path = TEMP_DIR / req.image_path
     logger.info(f"[edit] resolved original image path: {image_path}")
     if not image_path.exists():
         logger.error(f"[edit] original image not found: {image_path}")
@@ -59,6 +58,5 @@ async def edit(req: EditRequest):
         raise
     logger.info(f"[edit] done → {edited_path}")
     set_progress(req.session_id, "edit", 1.0, "Edit complete", done=True)
-    if "editor" in edited_path.lower():
-        edited_path = edited_path.lower().split("e:\\editor")[1]
+    edited_path = "/temp/" + str(Path(edited_path).relative_to(TEMP_DIR)).replace("\\", "/")
     return EditResponse(layer_id=req.layer_id, edited_png_path=edited_path, session_id=req.session_id)
