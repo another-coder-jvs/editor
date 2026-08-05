@@ -10,8 +10,4 @@ tunnel2 = ngrok.connect(
 )
 
 print(tunnel2.public_url)
-print(tunnel2.public_url+"/docs")
-
-print("Need drive permission to store the masks !" )
-from google.colab import drive
-drive.mount('/content/drive')
+print(tunnel2.public_url+"/docs") 
