@@ -27,15 +27,23 @@ export default function App() {
       const { session_id, image_path, layers } = session
       const imageUrl = `${baseUrl}/temp/${image_path.replace(/^\/temp\//, '').replace(/^\//, '')}`
       console.log(`OPENING : ${imageUrl}`)
-      const img = new Image()
-      const restore = (w = 1920, h = 1080) => {
-        setSession(session_id, image_path, imageUrl, w, h)
-        setLayers(layers)
-        toast.info('Resumed last session')
-      }
-      img.onload = () => restore(img.naturalWidth, img.naturalHeight)
-      img.onerror = () => restore()
-      img.src = imageUrl
+      fetch(imageUrl, { headers: { 'ngrok-skip-browser-warning': '1' } })
+        .then(r => r.blob())
+        .then(blob => {
+          const blobUrl = URL.createObjectURL(blob)
+          const img = new Image()
+          img.onload = () => {
+            setSession(session_id, image_path, blobUrl, img.naturalWidth, img.naturalHeight)
+            setLayers(layers)
+            toast.info('Resumed last session')
+          }
+          img.src = blobUrl
+        })
+        .catch(() => {
+          setSession(session_id, image_path, imageUrl, 1920, 1080)
+          setLayers(layers)
+          toast.info('Resumed last session')
+        })
     }).catch(() => { /* no cache, show uploader */ })
   }, [])
 

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 
 import { baseImagesUrl } from '@/config'
+import { useBlobUrl } from '../hooks/useBlobUrl'
 const API_BASE = baseImagesUrl || 'http://localhost:5000'
 
 export const LayerPanel: React.FC = () => {
@@ -66,7 +67,7 @@ const LayerItem: React.FC<LayerItemProps> = ({
   // const thumbUrl = layer.png_path
   //   ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
   //   : null
-  const thumbUrl = layer.png_path ? `${API_BASE}${layer.png_path}` : null
+  const thumbUrl = useBlobUrl(layer.png_path ? `${API_BASE}${layer.png_path}` : null)
 
   return (
     <div

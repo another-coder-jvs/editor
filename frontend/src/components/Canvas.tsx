@@ -1,11 +1,50 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import {baseImagesUrl} from "@/config"
+import { useBlobUrl } from '../hooks/useBlobUrl'
 const CHECKERBOARD = `
   repeating-conic-gradient(#2a2a2a 0% 25%, #1a1a1a 0% 50%)
   0 0 / 20px 20px
 `
 const API_BASE = baseImagesUrl || 'http://localhost:5000'
+
+interface LayerImageProps {
+  layer: any
+  rawUrl: string | null
+  isSelected: boolean
+  selectLayer: (id: string, multi: boolean) => void
+}
+const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer }) => {
+  const thumbUrl = useBlobUrl(rawUrl)
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); selectLayer(layer.id, e.ctrlKey || e.metaKey) }}
+      style={{
+        position: 'absolute',
+        left: layer.bbox.x + layer.position.x,
+        top: layer.bbox.y + layer.position.y,
+        width: layer.bbox.width,
+        height: layer.bbox.height,
+        opacity: layer.opacity,
+        transform: `rotate(${layer.rotation}deg) scale(${layer.scale.x}, ${layer.scale.y})`,
+        transformOrigin: 'center center',
+        outline: isSelected ? '2px solid #4f8ef7' : 'none',
+        cursor: layer.locked ? 'not-allowed' : 'pointer',
+        zIndex: layer.z_index,
+      }}
+    >
+      {thumbUrl && (
+        <img
+          src={thumbUrl}
+          alt={layer.name}
+          style={{ width: '100%', height: '100%', objectFit: 'fill' }}
+          draggable={false}
+        />
+      )}
+    </div>
+  )
+}
+
 export const Canvas: React.FC = () => {
   const {
     layers, originalImageUrl, canvasWidth, canvasHeight,
@@ -120,39 +159,8 @@ export const Canvas: React.FC = () => {
         {/* Layers */}
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
-          // const thumbUrl = layer.png_path
-          //   ? `/temp/${layer.png_path.split('/temp/')[1] ?? layer.png_path}`
-          //   : null
-          const thumbUrl = layer.png_path ? `${API_BASE}${layer.png_path}` : null
-          console.log("GOT : " , thumbUrl)
-          return (
-            <div
-              key={layer.id}
-              onClick={(e) => { e.stopPropagation(); selectLayer(layer.id, e.ctrlKey || e.metaKey) }}
-              style={{
-                position: 'absolute',
-                left: layer.bbox.x + layer.position.x,
-                top: layer.bbox.y + layer.position.y,
-                width: layer.bbox.width,
-                height: layer.bbox.height,
-                opacity: layer.opacity,
-                transform: `rotate(${layer.rotation}deg) scale(${layer.scale.x}, ${layer.scale.y})`,
-                transformOrigin: 'center center',
-                outline: isSelected ? '2px solid #4f8ef7' : 'none',
-                cursor: layer.locked ? 'not-allowed' : 'pointer',
-                zIndex: layer.z_index,
-              }}
-            >
-              {thumbUrl && (
-                <img
-                  src={thumbUrl}
-                  alt={layer.name}
-                  style={{ width: '100%', height: '100%', objectFit: 'fill' }}
-                  draggable={false}
-                />
-              )}
-            </div>
-          )
+          const rawUrl = layer.png_path ? `${API_BASE}${layer.png_path}` : null
+          return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} />
         })}
       </div>
     </div>
