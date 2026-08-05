@@ -1,6 +1,14 @@
-git status 
+#!/bin/bash
+
+git status
 git add .
-git commit -m "updated- $(date '+%d/%m/%Y %H:%M:%S')"
+
+if [ -n "$1" ]; then
+    git commit -m "updated - $1 - $(date '+%d/%m/%Y %H:%M:%S')"
+else
+    git commit -m "updated - $(date '+%d/%m/%Y %H:%M:%S')"
+fi
+
 git push origin master
 
-echo "Pushed !"
+echo "Pushed!"

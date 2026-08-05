@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 
 from services.model_manager import model_manager, DEVICE
-from services.text_service import edit_text_layer
+from services.text_service import edit_text_in_image
 from services.prompt_service import parse_edit_prompt
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,10 @@ def edit_layer(
             model_manager.unload_inpaint_pipe()
         gc.collect()
     else:
-        result = handler(layer_img, edit_params)
+        if edit_type == "text_edit":
+            result = handler(layer_img, edit_params, original_image_path)
+        else:
+            result = handler(layer_img, edit_params)
 
     result.save(str(out_path))
     logger.info(f"[editing] saved edited layer → {out_path}")
@@ -228,9 +231,17 @@ def _upscale(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
 
 # ── AI inpainting ─────────────────────────────────────────────────────────────
 
-def _text_edit(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
+def _text_edit(img: Image.Image, params: Dict[str, Any],
+               original_image_path: str = "") -> Image.Image:
     logger.info(f"[editing/text_edit] params={params}")
-    return edit_text_layer(img, params)
+    # Operate on full original image for correct coordinates
+    if original_image_path:
+        try:
+            orig = Image.open(original_image_path)
+            return edit_text_in_image(orig, params)
+        except Exception as e:
+            logger.warning(f"[text_edit] fallback to layer: {e}")
+    return edit_text_in_image(img, params)
 
 
 def _run_img2img_on_layer(layer_img: Image.Image, prompt: str, strength: float,
