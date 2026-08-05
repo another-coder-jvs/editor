@@ -13,12 +13,45 @@ interface LayerImageProps {
   rawUrl: string | null
   isSelected: boolean
   selectLayer: (id: string, multi: boolean) => void
+  updateLayer: (id: string, patch: any) => void
+  canvasScale: number
 }
-const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer }) => {
+const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer, updateLayer, canvasScale }) => {
   const thumbUrl = useBlobUrl(rawUrl)
+  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (layer.locked || e.button !== 0) return
+    e.stopPropagation()
+    selectLayer(layer.id, e.ctrlKey || e.metaKey)
+    dragStart.current = {
+      mx: e.clientX, my: e.clientY,
+      px: layer.position.x, py: layer.position.y,
+    }
+    e.preventDefault()
+  }
+
+  const onMouseMove = useCallback((e: MouseEvent) => {
+    if (!dragStart.current) return
+    const dx = (e.clientX - dragStart.current.mx) / canvasScale
+    const dy = (e.clientY - dragStart.current.my) / canvasScale
+    updateLayer(layer.id, { position: { x: dragStart.current.px + dx, y: dragStart.current.py + dy } })
+  }, [canvasScale, layer.id, updateLayer])
+
+  const onMouseUp = useCallback(() => { dragStart.current = null }, [])
+
+  useEffect(() => {
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [onMouseMove, onMouseUp])
+
   return (
     <div
-      onClick={(e) => { e.stopPropagation(); selectLayer(layer.id, e.ctrlKey || e.metaKey) }}
+      onMouseDown={onMouseDown}
       style={{
         position: 'absolute',
         left: layer.bbox.x + layer.position.x,
@@ -29,8 +62,9 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
         transform: `rotate(${layer.rotation}deg) scale(${layer.scale.x}, ${layer.scale.y})`,
         transformOrigin: 'center center',
         outline: isSelected ? '2px solid #4f8ef7' : 'none',
-        cursor: layer.locked ? 'not-allowed' : 'pointer',
+        cursor: layer.locked ? 'not-allowed' : (dragStart.current ? 'grabbing' : 'grab'),
         zIndex: layer.z_index,
+        userSelect: 'none',
       }}
     >
       {thumbUrl && (
@@ -49,7 +83,7 @@ export const Canvas: React.FC = () => {
   const {
     layers, originalImageUrl, canvasWidth, canvasHeight,
     canvasScale, canvasOffset, setCanvasScale, setCanvasOffset,
-    selectedLayerIds, selectLayer, clearSelection,
+    selectedLayerIds, selectLayer, clearSelection, updateLayer,
   } = useEditorStore()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -160,7 +194,7 @@ export const Canvas: React.FC = () => {
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
           const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
-          return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} />
+          return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} />
         })}
       </div>
     </div>

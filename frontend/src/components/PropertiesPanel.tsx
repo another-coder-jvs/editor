@@ -108,9 +108,8 @@ export const PropertiesPanel: React.FC = () => {
         const bgG = count ? Math.round(gSum/count) : 0
         const bgB = count ? Math.round(bSum/count) : 0
 
-        // Erase original text with sampled background
-        ctx.fillStyle = `rgb(${bgR},${bgG},${bgB})`
-        ctx.fillRect(lx1, ly1, w, h)
+        // Erase original text — clear to transparent (preserves layer alpha)
+        ctx.clearRect(lx1, ly1, w, h)
 
         // Draw new text with matched color and size
         const [tr, tg, tb] = r.color
