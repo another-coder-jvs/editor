@@ -53,6 +53,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.options("/{path:path}")
+def preflight_handler():
+    from fastapi.responses import Response
+    return Response(status_code=204, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    })
+
 app.include_router(detect.router, prefix="/detect", tags=["detect"])
 app.include_router(segment.router, prefix="/segment", tags=["segment"])
 app.include_router(layers.router, prefix="/layers", tags=["layers"])
