@@ -27,6 +27,7 @@ export default function App() {
     getLatestSession().then(({ session }) => {
       if (!session) return
       const { session_id, image_path, layers } = session
+      print
       const imageUrl = `${baseUrl}/temp/${image_path.replace(/^\/temp\//, '').replace(/^\//, '')}`
       console.log(`OPENING : ${imageUrl}`)
       fetch(imageUrl, { headers: { 'ngrok-skip-browser-warning': '1' } })

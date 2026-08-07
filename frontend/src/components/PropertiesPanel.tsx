@@ -17,7 +17,7 @@ interface TextRegion { bbox: number[]; text: string; color: number[]; font_size:
 
 export const PropertiesPanel: React.FC = () => {
   const {
-    layers, selectedLayerIds, updateLayer,
+    layers, selectedLayerIds, updateLayer, addLayer,
     sessionId, originalImagePath, pushHistory, setProgress,
   } = useEditorStore()
 
@@ -61,70 +61,72 @@ export const PropertiesPanel: React.FC = () => {
     pushHistory()
 
     try {
-      // Fetch via blob to bypass CORS (ngrok blocks crossOrigin image requests)
       const layerUrl = selectedLayer.png_path.startsWith('blob:')
         ? selectedLayer.png_path
         : `${baseUrl}${selectedLayer.png_path}`
       const blob = await fetch(layerUrl, { headers: { 'ngrok-skip-browser-warning': '1' } }).then(r => r.blob())
       const objectUrl = URL.createObjectURL(blob)
       const img = await new Promise<HTMLImageElement>((res, rej) => {
-        const el = new Image()
-        el.onload = () => res(el); el.onerror = rej
-        el.src = objectUrl
+        const el = new Image(); el.onload = () => res(el); el.onerror = rej; el.src = objectUrl
       })
-
-      const canvas = document.createElement('canvas')
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight
-      const ctx = canvas.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
       URL.revokeObjectURL(objectUrl)
 
-      // Layer bbox offset within the full image (detection coords are full-image)
-      const offX = selectedLayer.bbox.x
-      const offY = selectedLayer.bbox.y
+      const W = img.naturalWidth, H = img.naturalHeight
+      const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+
+      // Canvas 1: original layer with text regions cleared (background)
+      const bgCanvas = document.createElement('canvas')
+      bgCanvas.width = W; bgCanvas.height = H
+      const bgCtx = bgCanvas.getContext('2d')!
+      bgCtx.drawImage(img, 0, 0)
+
+      // Canvas 2: transparent, only new text
+      const txtCanvas = document.createElement('canvas')
+      txtCanvas.width = W; txtCanvas.height = H
+      const txtCtx = txtCanvas.getContext('2d')!
 
       for (const [i, newText] of edits) {
         const r = textRegions[+i]
         if (!r) continue
-        // Convert full-image coords → layer-local coords
-        const lx1 = r.bbox[0] - offX
-        const ly1 = r.bbox[1] - offY
-        const lx2 = r.bbox[2] - offX
-        const ly2 = r.bbox[3] - offY
+        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+        const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
         const w = lx2 - lx1, h = ly2 - ly1
         if (w < 1 || h < 1) continue
 
-        // Sample background: average rows just above and below the bbox
-        const pad = Math.max(2, Math.floor(h * 0.3))
-        const above = ctx.getImageData(lx1, Math.max(0, ly1 - pad), w, pad)
-        const below = ctx.getImageData(lx1, Math.min(canvas.height - pad, ly2), w, pad)
-        let rSum = 0, gSum = 0, bSum = 0, count = 0
-        for (const src of [above.data, below.data]) {
-          for (let p = 0; p < src.length; p += 4) {
-            rSum += src[p]; gSum += src[p+1]; bSum += src[p+2]; count++
-          }
-        }
-        const bgR = count ? Math.round(rSum/count) : 0
-        const bgG = count ? Math.round(gSum/count) : 0
-        const bgB = count ? Math.round(bSum/count) : 0
+        // Erase text from background canvas
+        bgCtx.clearRect(lx1, ly1, w, h)
 
-        // Erase original text — clear to transparent (preserves layer alpha)
-        ctx.clearRect(lx1, ly1, w, h)
-
-        // Draw new text with matched color and size
+        // Draw new text on text-only canvas
         const [tr, tg, tb] = r.color
-        ctx.fillStyle = `rgb(${tr},${tg},${tb})`
-        ctx.font = `bold ${r.font_size}px sans-serif`
-        ctx.textBaseline = 'middle'
-        ctx.textAlign = 'center'
-        ctx.fillText(newText, lx1 + w / 2, ly1 + h / 2, w)
+        txtCtx.fillStyle = `rgb(${tr},${tg},${tb})`
+        txtCtx.font = `bold ${r.font_size}px sans-serif`
+        txtCtx.textBaseline = 'middle'
+        txtCtx.textAlign = 'center'
+        txtCtx.fillText(newText, lx1 + w / 2, ly1 + h / 2, w)
       }
 
-      // Export canvas to blob URL and update layer in-place (no backend round-trip)
-      const canvasBlob = await new Promise<Blob>((res) => canvas.toBlob(b => res(b!), 'image/png'))
-      const blobUrl = URL.createObjectURL(canvasBlob)
+      const toBlob = (c: HTMLCanvasElement) =>
+        new Promise<Blob>(res => c.toBlob(b => res(b!), 'image/png'))
+
+      const [bgBlob, txtBlob] = await Promise.all([toBlob(bgCanvas), toBlob(txtCanvas)])
+      const bgUrl = URL.createObjectURL(bgBlob)
+      const txtUrl = URL.createObjectURL(txtBlob)
+
       const textPrompt = edits.map(([i, v]) => `"${textRegions[+i]?.text}" → "${v}"`).join(', ')
-      updateLayer(selectedLayer.id, { png_path: blobUrl, history: [...selectedLayer.history, textPrompt] })
+
+      // Update original layer to background-only (text erased)
+      updateLayer(selectedLayer.id, { png_path: bgUrl, history: [...selectedLayer.history, textPrompt] })
+
+      // Add new text-only layer on top
+      addLayer({
+        ...selectedLayer,
+        id: `${selectedLayer.id}_text_${Date.now()}`,
+        name: `${selectedLayer.name} text`,
+        png_path: txtUrl,
+        z_index: selectedLayer.z_index + 1,
+        history: [textPrompt],
+      })
+
       toast.success('Text updated!')
       setTextEdits({})
       setTextRegions([])

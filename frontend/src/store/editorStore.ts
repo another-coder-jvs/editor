@@ -39,6 +39,7 @@ interface EditorState {
   undo: () => void
   redo: () => void
   reorderLayer: (id: string, direction: 'up' | 'down') => void
+  addLayer: (layer: LayerData) => void
   duplicateLayer: (id: string) => void
   deleteLayer: (id: string) => void
   setCanvasScale: (s: number) => void
@@ -124,6 +125,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ;[arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]]
       return { layers: arr.map((l, i) => ({ ...l, z_index: arr.length - i })) }
     }),
+
+  addLayer: (layer) => set((s) => ({ layers: [...s.layers, layer] })),
 
   duplicateLayer: (id) =>
     set((s) => {

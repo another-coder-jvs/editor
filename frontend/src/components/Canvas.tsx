@@ -175,20 +175,9 @@ export const Canvas: React.FC = () => {
           boxShadow: '0 0 40px rgba(0,0,0,0.8)',
         }}
       >
-        {/* Background image */}
-        {originalImageUrl && (
-          <img
-            src={originalImageUrl}
-            alt="original"
-            data-canvas="bg"
-            style={{
-              position: 'absolute', inset: 0,
-              width: '100%', height: '100%',
-              objectFit: 'fill', userSelect: 'none',
-            }}
-            draggable={false}
-          />
-        )}
+        {/* Background image — hidden; layers already contain the full image content */}
+        {/* Uncomment below only if you want to show original behind all layers */}
+        {/* {originalImageUrl && <img src={originalImageUrl} ... />} */}
 
         {/* Layers */}
         {sortedLayers.map((layer) => {
