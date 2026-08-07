@@ -49,10 +49,36 @@ export const PropertiesPanel: React.FC = () => {
   // Reset text state when layer changes
   const originalLayerPngByLayer = React.useRef<Record<string, string>>({})
 
+  const handleTextChangeRef = React.useRef<(i: number, value: string) => void>(() => {})
+
   // Reset preview layer IDs when switching layers
   useEffect(() => {
     setPreviewLayerIds({})
   }, [selectedLayer?.id])
+
+  // Listen for inline canvas text edits (double-click on text layer)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { layerId, newText } = (e as CustomEvent).detail
+      const match = layerId.match(/_textpreview_(\d+)$/)
+      if (!match) return
+      handleTextChangeRef.current(parseInt(match[1]), newText)
+    }
+    window.addEventListener('canvas-text-edit', handler)
+    return () => window.removeEventListener('canvas-text-edit', handler)
+  }, [])
+
+  // Listen for inline canvas text edits (double-click on text layer)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { layerId, newText } = (e as CustomEvent).detail
+      const match = layerId.match(/_textpreview_(\d+)$/)
+      if (!match) return
+      handleTextChangeRef.current(parseInt(match[1]), newText)
+    }
+    window.addEventListener('canvas-text-edit', handler)
+    return () => window.removeEventListener('canvas-text-edit', handler)
+  }, [])
 
   const handleDetectText = async () => {
     if (!selectedLayer || !sessionId) return
@@ -191,6 +217,7 @@ export const PropertiesPanel: React.FC = () => {
       })
     }
   }
+  handleTextChangeRef.current = handleTextChange
 
   const handleApplyTextEdits = async () => {
     if (!selectedLayer || !sessionId) return

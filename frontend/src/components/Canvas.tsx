@@ -19,8 +19,13 @@ interface LayerImageProps {
 const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer, updateLayer, canvasScale }) => {
   const thumbUrl = useBlobUrl(rawUrl)
   const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+  const [inlineEditing, setInlineEditing] = useState(false)
+  const editRef = useRef<HTMLDivElement>(null)
+
+  const isTextPreview = layer.id.includes('_textpreview_')
 
   const onMouseDown = (e: React.MouseEvent) => {
+    if (inlineEditing) return
     if (layer.locked || e.button !== 0) return
     e.stopPropagation()
     selectLayer(layer.id, e.ctrlKey || e.metaKey)
@@ -29,6 +34,35 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
       px: layer.position.x, py: layer.position.y,
     }
     e.preventDefault()
+  }
+
+  const onDoubleClick = (e: React.MouseEvent) => {
+    if (!isTextPreview) return
+    e.stopPropagation()
+    setInlineEditing(true)
+    setTimeout(() => {
+      if (editRef.current) {
+        editRef.current.focus()
+        // place cursor at end
+        const range = document.createRange()
+        range.selectNodeContents(editRef.current)
+        range.collapse(false)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+      }
+    }, 0)
+  }
+
+  const commitInlineEdit = () => {
+    if (!editRef.current) return
+    const newText = editRef.current.innerText.trim()
+    setInlineEditing(false)
+    if (newText) {
+      // Dispatch custom event so PropertiesPanel can re-render the text PNG
+      window.dispatchEvent(new CustomEvent('canvas-text-edit', {
+        detail: { layerId: layer.id, newText }
+      }))
+    }
   }
 
   const onMouseMove = useCallback((e: MouseEvent) => {
@@ -52,6 +86,7 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
   return (
     <div
       onMouseDown={onMouseDown}
+      onDoubleClick={onDoubleClick}
       style={{
         position: 'absolute',
         left: layer.bbox.x + layer.position.x,
@@ -62,17 +97,34 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
         transform: `rotate(${layer.rotation}deg) scale(${layer.scale.x}, ${layer.scale.y})`,
         transformOrigin: 'center center',
         outline: isSelected ? '2px solid #4f8ef7' : 'none',
-        cursor: layer.locked ? 'not-allowed' : (dragStart.current ? 'grabbing' : 'grab'),
+        cursor: inlineEditing ? 'text' : (layer.locked ? 'not-allowed' : (dragStart.current ? 'grabbing' : 'grab')),
         zIndex: layer.z_index,
         userSelect: 'none',
       }}
     >
-      {thumbUrl && (
+      {thumbUrl && !inlineEditing && (
         <img
           src={thumbUrl}
           alt={layer.name}
           style={{ width: '100%', height: '100%', objectFit: 'fill' }}
           draggable={false}
+        />
+      )}
+      {inlineEditing && (
+        <div
+          ref={editRef}
+          contentEditable
+          suppressContentEditableWarning
+          onBlur={commitInlineEdit}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitInlineEdit() } if (e.key === 'Escape') setInlineEditing(false) }}
+          style={{
+            width: '100%', height: '100%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: layer.bbox.height, fontWeight: 'bold',
+            color: 'inherit', outline: '2px dashed #4f8ef7',
+            background: 'rgba(0,0,0,0.15)', userSelect: 'text',
+            cursor: 'text', whiteSpace: 'nowrap', overflow: 'hidden',
+          }}
         />
       )}
     </div>
