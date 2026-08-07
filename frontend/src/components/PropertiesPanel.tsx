@@ -27,14 +27,32 @@ export const PropertiesPanel: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false)
 
   // Text editing state
-  const [textRegions, setTextRegions] = useState<TextRegion[]>([])
-  const [textEdits, setTextEdits] = useState<Record<number, string>>({})
+  const [textRegionsByLayer, setTextRegionsByLayer] = useState<Record<string, TextRegion[]>>({})
+  const [textEditsByLayer, setTextEditsByLayer] = useState<Record<string, Record<number, string>>>({})
+  const [previewLayerIds, setPreviewLayerIds] = useState<Record<number, string>>({})
   const [detectingText, setDetectingText] = useState(false)
 
   const selectedLayer = layers.find((l) => selectedLayerIds[0] === l.id)
 
+  const textRegions = selectedLayer ? (textRegionsByLayer[selectedLayer.id] ?? []) : []
+  const textEdits   = selectedLayer ? (textEditsByLayer[selectedLayer.id]   ?? {}) : {}
+
+  const setTextRegions = (regions: TextRegion[]) => {
+    if (!selectedLayer) return
+    setTextRegionsByLayer(prev => ({ ...prev, [selectedLayer.id]: regions }))
+  }
+  const setTextEdits = (edits: Record<number, string>) => {
+    if (!selectedLayer) return
+    setTextEditsByLayer(prev => ({ ...prev, [selectedLayer.id]: edits }))
+  }
+
   // Reset text state when layer changes
-  useEffect(() => { setTextRegions([]); setTextEdits({}) }, [selectedLayer?.id])
+  const originalLayerPngByLayer = React.useRef<Record<string, string>>({})
+
+  // Reset preview layer IDs when switching layers
+  useEffect(() => {
+    setPreviewLayerIds({})
+  }, [selectedLayer?.id])
 
   const handleDetectText = async () => {
     if (!selectedLayer || !sessionId) return
@@ -52,140 +70,155 @@ export const PropertiesPanel: React.FC = () => {
     finally { setDetectingText(false) }
   }
 
+  const _loadLayerImg = async () => {
+    if (!selectedLayer) return null
+    const lid = selectedLayer.id
+    const srcUrl = originalLayerPngByLayer.current[lid]
+      ?? (selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
+          ? selectedLayer.png_path : `${baseUrl}${selectedLayer.png_path}`)
+    const blob = await fetch(srcUrl, { headers: { 'ngrok-skip-browser-warning': '1' } }).then(r => r.blob())
+    const objectUrl = URL.createObjectURL(blob)
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
+      const el = new Image(); el.onload = () => res(el); el.onerror = rej; el.src = objectUrl
+    })
+    URL.revokeObjectURL(objectUrl)
+    return img
+  }
+
+  // Inpaint background for all edited regions, return bgUrl blob
+  const _renderBg = async (img: HTMLImageElement, currentEdits: Record<number, string>) => {
+    const W = img.naturalWidth, H = img.naturalHeight
+    const offX = selectedLayer!.bbox.x, offY = selectedLayer!.bbox.y
+    const bgCanvas = document.createElement('canvas')
+    bgCanvas.width = W; bgCanvas.height = H
+    const bgCtx = bgCanvas.getContext('2d')!
+    bgCtx.drawImage(img, 0, 0)
+    for (const [i] of Object.entries(currentEdits).filter(([, v]) => v.trim())) {
+      const r = textRegions[+i]; if (!r) continue
+      const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+      const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
+      const w = lx2 - lx1, h = ly2 - ly1
+      if (w < 1 || h < 1) continue
+      const pad = Math.max(4, Math.round(Math.min(w, h) * 0.15))
+      const sx1 = Math.max(0, lx1 - pad), sy1 = Math.max(0, ly1 - pad)
+      const sx2 = Math.min(W, lx2 + pad), sy2 = Math.min(H, ly2 + pad)
+      const borderData = bgCtx.getImageData(sx1, sy1, sx2 - sx1, sy2 - sy1)
+      const bd = borderData.data; const bw = sx2 - sx1, bh = sy2 - sy1
+      let rSum = 0, gSum = 0, bSum = 0, count = 0
+      for (let py = 0; py < bh; py++) for (let px = 0; px < bw; px++) {
+        const absX = sx1 + px, absY = sy1 + py
+        if (absX >= lx1 && absX < lx2 && absY >= ly1 && absY < ly2) continue
+        const idx = (py * bw + px) * 4
+        rSum += bd[idx]; gSum += bd[idx + 1]; bSum += bd[idx + 2]; count++
+      }
+      if (count === 0) { bgCtx.clearRect(lx1, ly1, w, h); continue }
+      const avgR = rSum / count, avgG = gSum / count, avgB = bSum / count
+      const textArea = bgCtx.getImageData(lx1, ly1, w, h); const td = textArea.data
+      for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+        const nearTop = py, nearBot = h - 1 - py, nearLeft = px, nearRight = w - 1 - px
+        const minDist = Math.min(nearTop, nearBot, nearLeft, nearRight)
+        const blendT = Math.min(1, minDist / (pad + 1))
+        let bpx = px + lx1 - sx1, bpy = py + ly1 - sy1
+        if (nearTop <= minDist) bpy = 0
+        else if (nearBot <= minDist) bpy = bh - 1
+        else if (nearLeft <= minDist) bpx = 0
+        else bpx = bw - 1
+        bpx = Math.max(0, Math.min(bw - 1, bpx)); bpy = Math.max(0, Math.min(bh - 1, bpy))
+        const bidx = (bpy * bw + bpx) * 4
+        const idx = (py * w + px) * 4
+        td[idx]   = Math.round(bd[bidx]   * (1 - blendT) + avgR * blendT)
+        td[idx+1] = Math.round(bd[bidx+1] * (1 - blendT) + avgG * blendT)
+        td[idx+2] = Math.round(bd[bidx+2] * (1 - blendT) + avgB * blendT)
+      }
+      bgCtx.putImageData(textArea, lx1, ly1)
+    }
+    return new Promise<string>(res => bgCanvas.toBlob(b => res(URL.createObjectURL(b!)), 'image/png'))
+  }
+
+  // Render a single text region as a tight-cropped transparent PNG blob URL
+  const _renderTextPng = (r: TextRegion, newText: string, offX: number, offY: number): string => {
+    const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+    const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
+    const w = Math.max(1, lx2 - lx1), h = Math.max(1, ly2 - ly1)
+    const c = document.createElement('canvas'); c.width = w; c.height = h
+    const ctx = c.getContext('2d')!
+    const [tr, tg, tb] = r.color
+    ctx.fillStyle = `rgb(${tr},${tg},${tb})`
+    ctx.font = `bold ${r.font_size}px sans-serif`
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'center'
+    ctx.fillText(newText, w / 2, h / 2, w)
+    return c.toDataURL('image/png')  // sync, no async needed for preview
+  }
+
+  // Live preview on every keystroke
+  const handleTextChange = async (i: number, value: string) => {
+    const next = { ...textEdits, [i]: value }
+    setTextEdits(next)
+    if (!selectedLayer) return
+    if (!originalLayerPngByLayer.current[selectedLayer.id]) {
+      originalLayerPngByLayer.current[selectedLayer.id] = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
+        ? selectedLayer.png_path : `${baseUrl}${selectedLayer.png_path}`
+    }
+    const img = await _loadLayerImg(); if (!img) return
+    const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+    const bgUrl = await _renderBg(img, next)
+    updateLayer(selectedLayer.id, { png_path: bgUrl })
+
+    if (!value.trim()) return
+    const r = textRegions[i]; if (!r) return
+    const txtDataUrl = _renderTextPng(r, value, offX, offY)
+    const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+    const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+
+    const existingPid = previewLayerIds[i]
+    if (existingPid && layers.find(l => l.id === existingPid)) {
+      updateLayer(existingPid, { png_path: txtDataUrl })
+    } else {
+      const pid = `${selectedLayer.id}_textpreview_${i}`
+      setPreviewLayerIds(prev => ({ ...prev, [i]: pid }))
+      addLayer({
+        ...selectedLayer,
+        id: pid,
+        name: `text: ${r.text}`,
+        png_path: txtDataUrl,
+        bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+        position: { x: 0, y: 0 },
+        scale: { x: 1, y: 1 },
+        rotation: 0,
+        z_index: selectedLayer.z_index + 1 + i,
+        history: [],
+        locked: false,
+      })
+    }
+  }
+
   const handleApplyTextEdits = async () => {
     if (!selectedLayer || !sessionId) return
     const edits = Object.entries(textEdits).filter(([, v]) => v.trim())
     if (!edits.length) return
-
     setIsEditing(true)
     pushHistory()
-
     try {
-      const layerUrl = selectedLayer.png_path.startsWith('blob:')
-        ? selectedLayer.png_path
-        : `${baseUrl}${selectedLayer.png_path}`
-      const blob = await fetch(layerUrl, { headers: { 'ngrok-skip-browser-warning': '1' } }).then(r => r.blob())
-      const objectUrl = URL.createObjectURL(blob)
-      const img = await new Promise<HTMLImageElement>((res, rej) => {
-        const el = new Image(); el.onload = () => res(el); el.onerror = rej; el.src = objectUrl
-      })
-      URL.revokeObjectURL(objectUrl)
-
-      const W = img.naturalWidth, H = img.naturalHeight
+      const img = await _loadLayerImg(); if (!img) return
       const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-
-      // Canvas 1: original layer with text regions cleared (background)
-      const bgCanvas = document.createElement('canvas')
-      bgCanvas.width = W; bgCanvas.height = H
-      const bgCtx = bgCanvas.getContext('2d')!
-      bgCtx.drawImage(img, 0, 0)
-
-      // Canvas 2: transparent, only new text
-      const txtCanvas = document.createElement('canvas')
-      txtCanvas.width = W; txtCanvas.height = H
-      const txtCtx = txtCanvas.getContext('2d')!
-
-      for (const [i, newText] of edits) {
-        const r = textRegions[+i]
-        if (!r) continue
-        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-        const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
-        const w = lx2 - lx1, h = ly2 - ly1
-        if (w < 1 || h < 1) continue
-
-        // Reconstruct background: sample a border ring around the text bbox
-        // and fill the text area with those pixels (simple inpaint)
-        const pad = Math.max(4, Math.round(Math.min(w, h) * 0.15))
-        const sx1 = Math.max(0, lx1 - pad), sy1 = Math.max(0, ly1 - pad)
-        const sx2 = Math.min(W, lx2 + pad), sy2 = Math.min(H, ly2 + pad)
-
-        // Get the border ring pixels (exclude the text bbox interior)
-        const borderData = bgCtx.getImageData(sx1, sy1, sx2 - sx1, sy2 - sy1)
-        const bd = borderData.data
-        const bw = sx2 - sx1, bh = sy2 - sy1
-
-        // Average border pixels (top/bottom/left/right strips)
-        let rSum = 0, gSum = 0, bSum = 0, count = 0
-        for (let py = 0; py < bh; py++) {
-          for (let px = 0; px < bw; px++) {
-            const absX = sx1 + px, absY = sy1 + py
-            // Only sample pixels outside the text bbox
-            if (absX >= lx1 && absX < lx2 && absY >= ly1 && absY < ly2) continue
-            const idx = (py * bw + px) * 4
-            rSum += bd[idx]; gSum += bd[idx + 1]; bSum += bd[idx + 2]; count++
-          }
-        }
-        if (count === 0) { bgCtx.clearRect(lx1, ly1, w, h); continue }
-        const avgR = rSum / count, avgG = gSum / count, avgB = bSum / count
-
-        // Fill text area with averaged border color (preserves alpha of layer)
-        // Use nearest-border pixel per row for better gradient reconstruction
-        const textArea = bgCtx.getImageData(lx1, ly1, w, h)
-        const td = textArea.data
-        for (let py = 0; py < h; py++) {
-          for (let px = 0; px < w; px++) {
-            // Blend: weight toward nearest border pixel
-            const nearTop  = py
-            const nearBot  = h - 1 - py
-            const nearLeft = px
-            const nearRight = w - 1 - px
-            const minDist = Math.min(nearTop, nearBot, nearLeft, nearRight)
-            const blendT = Math.min(1, minDist / (pad + 1))
-
-            // Sample the closest border pixel for this position
-            let bpx = px + lx1 - sx1, bpy = py + ly1 - sy1
-            if (nearTop <= minDist) bpy = 0
-            else if (nearBot <= minDist) bpy = bh - 1
-            else if (nearLeft <= minDist) bpx = 0
-            else bpx = bw - 1
-            bpx = Math.max(0, Math.min(bw - 1, bpx))
-            bpy = Math.max(0, Math.min(bh - 1, bpy))
-            const bidx = (bpy * bw + bpx) * 4
-            const br = bd[bidx], bg2 = bd[bidx + 1], bb2 = bd[bidx + 2]
-
-            const idx = (py * w + px) * 4
-            td[idx]     = Math.round(br * (1 - blendT) + avgR * blendT)
-            td[idx + 1] = Math.round(bg2 * (1 - blendT) + avgG * blendT)
-            td[idx + 2] = Math.round(bb2 * (1 - blendT) + avgB * blendT)
-            // Keep original alpha (don't punch a hole)
-          }
-        }
-        bgCtx.putImageData(textArea, lx1, ly1)
-
-        // Draw new text on text-only canvas
-        const [tr, tg, tb] = r.color
-        txtCtx.fillStyle = `rgb(${tr},${tg},${tb})`
-        txtCtx.font = `bold ${r.font_size}px sans-serif`
-        txtCtx.textBaseline = 'middle'
-        txtCtx.textAlign = 'center'
-        txtCtx.fillText(newText, lx1 + w / 2, ly1 + h / 2, w)
-      }
-
-      const toBlob = (c: HTMLCanvasElement) =>
-        new Promise<Blob>(res => c.toBlob(b => res(b!), 'image/png'))
-
-      const [bgBlob, txtBlob] = await Promise.all([toBlob(bgCanvas), toBlob(txtCanvas)])
-      const bgUrl = URL.createObjectURL(bgBlob)
-      const txtUrl = URL.createObjectURL(txtBlob)
-
+      const bgUrl = await _renderBg(img, textEdits)
       const textPrompt = edits.map(([i, v]) => `"${textRegions[+i]?.text}" → "${v}"`).join(', ')
-
-      // Update original layer to background-only (text erased)
       updateLayer(selectedLayer.id, { png_path: bgUrl, history: [...selectedLayer.history, textPrompt] })
 
-      // Add new text-only layer on top
-      addLayer({
-        ...selectedLayer,
-        id: `${selectedLayer.id}_text_${Date.now()}`,
-        name: `${selectedLayer.name} text`,
-        png_path: txtUrl,
-        z_index: selectedLayer.z_index + 1,
-        history: [textPrompt],
-      })
-
+      // Finalize each preview layer (already positioned correctly)
+      for (const [i, newText] of edits) {
+        const r = textRegions[+i]; if (!r) continue
+        const txtDataUrl = _renderTextPng(r, newText, offX, offY)
+        const pid = previewLayerIds[+i]
+        if (pid && layers.find(l => l.id === pid)) {
+          updateLayer(pid, { png_path: txtDataUrl, history: [textPrompt] })
+        }
+      }
       toast.success('Text updated!')
-      setTextEdits({})
       setTextRegions([])
+      setTextEdits({})
+      setPreviewLayerIds({})
+      if (selectedLayer) delete originalLayerPngByLayer.current[selectedLayer.id]
     } catch (err: any) {
       toast.error('Text edit failed: ' + (err?.message || err))
     } finally { setIsEditing(false) }
@@ -270,7 +303,7 @@ export const PropertiesPanel: React.FC = () => {
                       className="w-full bg-dark-600 text-sm text-white rounded px-2 py-1 border border-dark-500 focus:border-accent outline-none"
                       placeholder={r.text}
                       value={textEdits[i] ?? ''}
-                      onChange={e => setTextEdits(prev => ({ ...prev, [i]: e.target.value }))}
+                      onChange={e => handleTextChange(i, e.target.value)}
                     />
                     <div className="flex items-center gap-1 mt-1">
                       <span className="text-xs text-gray-500">Color:</span>

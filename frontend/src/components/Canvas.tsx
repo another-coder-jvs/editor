@@ -182,7 +182,7 @@ export const Canvas: React.FC = () => {
         {/* Layers */}
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
-          const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
+          const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") || layer.png_path.startsWith("data:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
           return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} />
         })}
       </div>

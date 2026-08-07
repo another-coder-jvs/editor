@@ -5,7 +5,7 @@ export function useBlobUrl(url: string | null): string | null {
 
   useEffect(() => {
     if (!url) return
-    if (url.startsWith("blob:")) { setBlobUrl(url); return }
+    if (url.startsWith("blob:") || url.startsWith("data:")) { setBlobUrl(url); return }
     let objectUrl: string
     fetch(url, { headers: { 'ngrok-skip-browser-warning': '1' } })
       .then(r => r.blob())
