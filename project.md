@@ -284,3 +284,19 @@ start.bat         # Windows
 - `vite.config.ts` proxy `baseUrl` is `null` (falls back to `localhost:8000`) — correct for local dev.
 - The `models/` directory at root contains duplicate weight files separate from `weights/` — only `weights/` is used by the backend.
 - `backend/.venv` is a Windows venv (Scripts/ folder) — not used on Linux; use root `.venv` or system Python.
+
+
+Step 1 — Detect Text
+• Calls POST /text/detect with session_id, layer_id, image_path (original full image)
+• Stores detected regions: {bbox, text, color, font_size}
+
+Step 2 — Apply (handleApplyTextEdits)
+
+1. Fetches the layer's PNG (the cropped RGBA layer, e.g. a person crop) as a blob
+2. Draws it onto bgCanvas (same W×H as the layer crop)
+3. For each edited text region:
+   • Converts bbox from full-image coords → layer-local coords by subtracting bbox.x / bbox.y
+   • **Erases** old text: bgCtx.clearRect(lx1, ly1, w, h) — makes that area transparent (this is the bug — it punches a hole)
+   • Draws new text onto txtCanvas using fillText with detected color/font_size
+4. Saves bgCanvas → blob URL → replaces layer's png_path (background with transparent hole)
+5. Saves txtCanvas → blob URL → adds as a new layer on top

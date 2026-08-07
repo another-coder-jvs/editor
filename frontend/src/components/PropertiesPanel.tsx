@@ -93,8 +93,64 @@ export const PropertiesPanel: React.FC = () => {
         const w = lx2 - lx1, h = ly2 - ly1
         if (w < 1 || h < 1) continue
 
-        // Erase text from background canvas
-        bgCtx.clearRect(lx1, ly1, w, h)
+        // Reconstruct background: sample a border ring around the text bbox
+        // and fill the text area with those pixels (simple inpaint)
+        const pad = Math.max(4, Math.round(Math.min(w, h) * 0.15))
+        const sx1 = Math.max(0, lx1 - pad), sy1 = Math.max(0, ly1 - pad)
+        const sx2 = Math.min(W, lx2 + pad), sy2 = Math.min(H, ly2 + pad)
+
+        // Get the border ring pixels (exclude the text bbox interior)
+        const borderData = bgCtx.getImageData(sx1, sy1, sx2 - sx1, sy2 - sy1)
+        const bd = borderData.data
+        const bw = sx2 - sx1, bh = sy2 - sy1
+
+        // Average border pixels (top/bottom/left/right strips)
+        let rSum = 0, gSum = 0, bSum = 0, count = 0
+        for (let py = 0; py < bh; py++) {
+          for (let px = 0; px < bw; px++) {
+            const absX = sx1 + px, absY = sy1 + py
+            // Only sample pixels outside the text bbox
+            if (absX >= lx1 && absX < lx2 && absY >= ly1 && absY < ly2) continue
+            const idx = (py * bw + px) * 4
+            rSum += bd[idx]; gSum += bd[idx + 1]; bSum += bd[idx + 2]; count++
+          }
+        }
+        if (count === 0) { bgCtx.clearRect(lx1, ly1, w, h); continue }
+        const avgR = rSum / count, avgG = gSum / count, avgB = bSum / count
+
+        // Fill text area with averaged border color (preserves alpha of layer)
+        // Use nearest-border pixel per row for better gradient reconstruction
+        const textArea = bgCtx.getImageData(lx1, ly1, w, h)
+        const td = textArea.data
+        for (let py = 0; py < h; py++) {
+          for (let px = 0; px < w; px++) {
+            // Blend: weight toward nearest border pixel
+            const nearTop  = py
+            const nearBot  = h - 1 - py
+            const nearLeft = px
+            const nearRight = w - 1 - px
+            const minDist = Math.min(nearTop, nearBot, nearLeft, nearRight)
+            const blendT = Math.min(1, minDist / (pad + 1))
+
+            // Sample the closest border pixel for this position
+            let bpx = px + lx1 - sx1, bpy = py + ly1 - sy1
+            if (nearTop <= minDist) bpy = 0
+            else if (nearBot <= minDist) bpy = bh - 1
+            else if (nearLeft <= minDist) bpx = 0
+            else bpx = bw - 1
+            bpx = Math.max(0, Math.min(bw - 1, bpx))
+            bpy = Math.max(0, Math.min(bh - 1, bpy))
+            const bidx = (bpy * bw + bpx) * 4
+            const br = bd[bidx], bg2 = bd[bidx + 1], bb2 = bd[bidx + 2]
+
+            const idx = (py * w + px) * 4
+            td[idx]     = Math.round(br * (1 - blendT) + avgR * blendT)
+            td[idx + 1] = Math.round(bg2 * (1 - blendT) + avgG * blendT)
+            td[idx + 2] = Math.round(bb2 * (1 - blendT) + avgB * blendT)
+            // Keep original alpha (don't punch a hole)
+          }
+        }
+        bgCtx.putImageData(textArea, lx1, ly1)
 
         // Draw new text on text-only canvas
         const [tr, tg, tb] = r.color
