@@ -78,46 +78,120 @@ def _get_lama():
     return _lama if _lama is not False else None
 
 
+def _build_glyph_mask(arr: np.ndarray, quad_pts: np.ndarray) -> np.ndarray:
+    """
+    Build a tight per-pixel glyph mask inside the quad by segmenting
+    ink pixels from background using K-means (k=2) on the crop.
+    Only pixels that belong to the text ink cluster are masked.
+    Falls back to full quad fill if segmentation fails.
+    """
+    H, W = arr.shape[:2]
+    # Bounding rect of quad
+    xs, ys = quad_pts[:, 0], quad_pts[:, 1]
+    x1, y1 = max(0, xs.min()), max(0, ys.min())
+    x2, y2 = min(W, xs.max()), min(H, ys.max())
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask, [quad_pts], 255)
+        return mask
+
+    crop = arr[y1:y2, x1:x2].astype(np.float32)
+    pixels = crop.reshape(-1, 3)
+
+    try:
+        # K-means into 2 clusters: ink vs background
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+        _, labels, centers = cv2.kmeans(
+            pixels, 2, None, criteria, 5, cv2.KMEANS_PP_CENTERS
+        )
+        labels = labels.flatten().reshape(crop.shape[:2])
+
+        # The ink cluster is the darker one (lower mean brightness)
+        brightness = centers.mean(axis=1)
+        ink_label = int(np.argmin(brightness))
+
+        # If background is much darker than text (light text on dark bg), flip
+        # Determine by minority: text usually covers less area than background
+        count0 = np.sum(labels == 0)
+        count1 = np.sum(labels == 1)
+        # Minority cluster = ink
+        ink_label = 0 if count0 < count1 else 1
+
+        ink_mask_crop = (labels == ink_label).astype(np.uint8) * 255
+
+        # Morphological cleanup: remove isolated noise, keep connected glyphs
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        ink_mask_crop = cv2.morphologyEx(ink_mask_crop, cv2.MORPH_OPEN, k)
+        # Expand by 1px to cover anti-aliased edges
+        k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        ink_mask_crop = cv2.dilate(ink_mask_crop, k2, iterations=1)
+
+        # Place crop mask back into full-image mask, clipped to quad polygon
+        full_mask = np.zeros((H, W), dtype=np.uint8)
+        full_mask[y1:y2, x1:x2] = ink_mask_crop
+
+        # Clip to quad polygon so we don't touch pixels outside the text region
+        quad_mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(quad_mask, [quad_pts], 255)
+        full_mask = cv2.bitwise_and(full_mask, quad_mask)
+
+        # If segmentation produced almost nothing, fall back to quad fill
+        if full_mask.sum() < 50:
+            return quad_mask
+
+        return full_mask
+
+    except Exception:
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask, [quad_pts], 255)
+        return mask
+
+
 def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
-    """Erase text regions using LaMa (best quality) with cv2.inpaint fallback."""
+    """
+    Erase text regions using tight per-glyph masks (not rectangular bbox).
+    Uses LaMa for reconstruction, cv2.inpaint TELEA as fallback.
+    Only ink pixels are masked — background texture is never touched.
+    """
     has_alpha = img.mode == "RGBA"
     alpha = img.getchannel("A") if has_alpha else None
     rgb = img.convert("RGB")
     arr = np.array(rgb)
 
-    # Build combined mask (white = erase)
-    mask = np.zeros(arr.shape[:2], dtype=np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # Build combined tight glyph mask across all regions
+    combined_mask = np.zeros(arr.shape[:2], dtype=np.uint8)
     for r in regions:
         quad_pts = np.array([[int(p[0]), int(p[1])] for p in r["quad"]], dtype=np.int32)
-        cv2.fillPoly(mask, [quad_pts], 255)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+        glyph_mask = _build_glyph_mask(arr, quad_pts)
+        combined_mask = np.maximum(combined_mask, glyph_mask)
 
     lama = _get_lama()
     if lama is not None:
         try:
-            mask_pil = Image.fromarray(mask)
+            mask_pil = Image.fromarray(combined_mask)
             result_rgb = lama(rgb, mask_pil)
             result = result_rgb.convert("RGBA") if has_alpha else result_rgb
-            if has_alpha:
+            if has_alpha and alpha is not None:
                 result.putalpha(alpha)
             return result
         except Exception as e:
             logger.warning(f"[text_service] LaMa failed ({e}), falling back to cv2.inpaint")
 
-    # Fallback: cv2.inpaint TELEA
-    inpainted = cv2.inpaint(arr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+    # Fallback: cv2.inpaint TELEA on tight glyph mask
+    inpainted = cv2.inpaint(arr, combined_mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
     result = Image.fromarray(inpainted)
     if has_alpha:
         result = result.convert("RGBA")
-        result.putalpha(alpha)
+        if alpha is not None:
+            result.putalpha(alpha)
     return result
 
 
 def render_text_patch(region: dict, new_text: str) -> Image.Image:
     """
-    Render new_text onto a transparent RGBA patch matching the region's
-    exact bbox size, color, and fitted font size.
+    Render new_text onto a transparent RGBA patch at the exact bbox size.
+    Font size is fitted to match the original glyph height precisely.
+    Text is baseline-aligned to match the original quad geometry.
     """
     bbox = region["bbox"]  # [x1, y1, x2, y2] in full-image coords
     x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
@@ -127,14 +201,25 @@ def render_text_patch(region: dict, new_text: str) -> Image.Image:
     patch = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(patch)
 
-    # Fit font: start at 85% of bbox height, shrink until text fits width
-    font_size = max(8, int(h * 0.85))
+    # Fit font to cap-height: start at 90% of bbox height
+    font_size = max(8, int(h * 0.90))
     font = _load_font(font_size)
     font, new_text = _fit_text(draw, new_text, font, w, font_size)
 
+    # Align to baseline: use ascent to position text so baseline matches original
+    try:
+        ascent, descent = font.getmetrics()
+    except Exception:
+        ascent, descent = font_size, int(font_size * 0.2)
+
     tb = draw.textbbox((0, 0), new_text, font=font)
-    tx = (w - (tb[2] - tb[0])) // 2
-    ty = (h - (tb[3] - tb[1])) // 2
+    text_w = tb[2] - tb[0]
+    text_h = tb[3] - tb[1]
+
+    # Center horizontally, align baseline to bottom of bbox (minus descent)
+    tx = (w - text_w) // 2
+    ty = h - descent - text_h + (tb[1])  # baseline-anchored
+
     draw.text((tx, ty), new_text, font=font,
               fill=(int(color[0]), int(color[1]), int(color[2]), 255))
     return patch
@@ -187,13 +272,9 @@ def edit_text_in_image(orig_img: Image.Image, params: Dict[str, Any]) -> Image.I
         text_color = _text_color(crop_rgb)
         font_size = max(8, h)
 
-        # ── 1. Erase original text with cv2.inpaint ──
-        mask = np.zeros(arr.shape[:2], dtype=np.uint8)
-        cv2.fillPoly(mask, [quad_pts], 255)
-        # Dilate mask slightly to cover anti-aliased edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask_d = cv2.dilate(mask, kernel, iterations=1)
-        inpainted = cv2.inpaint(result_arr, mask_d, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
+        # ── 1. Erase original text with tight glyph mask + cv2.inpaint ──
+        glyph_mask = _build_glyph_mask(arr, quad_pts)
+        inpainted = cv2.inpaint(result_arr, glyph_mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
         result_arr = inpainted
 
         # ── 2. Render new text onto a transparent patch ──
