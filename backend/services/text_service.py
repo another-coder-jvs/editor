@@ -112,7 +112,7 @@ def render_text_patch(region: dict, new_text: str) -> Image.Image:
     return patch
 
 
-
+def edit_text_in_image(orig_img: Image.Image, params: Dict[str, Any]) -> Image.Image:
     """
     Edit text directly on the full original image.
     Returns the full edited image (same size as input).
