@@ -98,126 +98,95 @@ export const PropertiesPanel: React.FC = () => {
     finally { setDetectingText(false) }
   }
 
-  const _loadLayerImg = async () => {
-    if (!selectedLayer) return null
+  // ── helpers: call BE for bg erase and text render ──────────────────────────
+
+  const _getOriginalLayerPath = (): string => {
+    if (!selectedLayer) return ''
     const lid = selectedLayer.id
-    const srcUrl = originalLayerPngByLayer.current[lid]
-      ?? (selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-          ? selectedLayer.png_path : `${baseUrl}${selectedLayer.png_path}`)
-    const blob = await fetch(srcUrl, { headers: { 'ngrok-skip-browser-warning': '1' } }).then(r => r.blob())
-    const objectUrl = URL.createObjectURL(blob)
-    const img = await new Promise<HTMLImageElement>((res, rej) => {
-      const el = new Image(); el.onload = () => res(el); el.onerror = rej; el.src = objectUrl
-    })
-    URL.revokeObjectURL(objectUrl)
-    return img
-  }
-
-  // Inpaint background for all edited regions, return bgUrl blob
-  const _renderBg = async (img: HTMLImageElement, currentEdits: Record<number, string>) => {
-    const W = img.naturalWidth, H = img.naturalHeight
-    const offX = selectedLayer!.bbox.x, offY = selectedLayer!.bbox.y
-    const bgCanvas = document.createElement('canvas')
-    bgCanvas.width = W; bgCanvas.height = H
-    const bgCtx = bgCanvas.getContext('2d')!
-    bgCtx.drawImage(img, 0, 0)
-    for (const [i] of Object.entries(currentEdits).filter(([, v]) => v.trim())) {
-      const r = textRegions[+i]; if (!r) continue
-      const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-      const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
-      const w = lx2 - lx1, h = ly2 - ly1
-      if (w < 1 || h < 1) continue
-      const pad = Math.max(4, Math.round(Math.min(w, h) * 0.15))
-      const sx1 = Math.max(0, lx1 - pad), sy1 = Math.max(0, ly1 - pad)
-      const sx2 = Math.min(W, lx2 + pad), sy2 = Math.min(H, ly2 + pad)
-      const borderData = bgCtx.getImageData(sx1, sy1, sx2 - sx1, sy2 - sy1)
-      const bd = borderData.data; const bw = sx2 - sx1, bh = sy2 - sy1
-      let rSum = 0, gSum = 0, bSum = 0, count = 0
-      for (let py = 0; py < bh; py++) for (let px = 0; px < bw; px++) {
-        const absX = sx1 + px, absY = sy1 + py
-        if (absX >= lx1 && absX < lx2 && absY >= ly1 && absY < ly2) continue
-        const idx = (py * bw + px) * 4
-        rSum += bd[idx]; gSum += bd[idx + 1]; bSum += bd[idx + 2]; count++
-      }
-      if (count === 0) { bgCtx.clearRect(lx1, ly1, w, h); continue }
-      const avgR = rSum / count, avgG = gSum / count, avgB = bSum / count
-      const textArea = bgCtx.getImageData(lx1, ly1, w, h); const td = textArea.data
-      for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
-        const nearTop = py, nearBot = h - 1 - py, nearLeft = px, nearRight = w - 1 - px
-        const minDist = Math.min(nearTop, nearBot, nearLeft, nearRight)
-        const blendT = Math.min(1, minDist / (pad + 1))
-        let bpx = px + lx1 - sx1, bpy = py + ly1 - sy1
-        if (nearTop <= minDist) bpy = 0
-        else if (nearBot <= minDist) bpy = bh - 1
-        else if (nearLeft <= minDist) bpx = 0
-        else bpx = bw - 1
-        bpx = Math.max(0, Math.min(bw - 1, bpx)); bpy = Math.max(0, Math.min(bh - 1, bpy))
-        const bidx = (bpy * bw + bpx) * 4
-        const idx = (py * w + px) * 4
-        td[idx]   = Math.round(bd[bidx]   * (1 - blendT) + avgR * blendT)
-        td[idx+1] = Math.round(bd[bidx+1] * (1 - blendT) + avgG * blendT)
-        td[idx+2] = Math.round(bd[bidx+2] * (1 - blendT) + avgB * blendT)
-      }
-      bgCtx.putImageData(textArea, lx1, ly1)
+    if (!originalLayerPngByLayer.current[lid]) {
+      originalLayerPngByLayer.current[lid] = selectedLayer.png_path
     }
-    return new Promise<string>(res => bgCanvas.toBlob(b => res(URL.createObjectURL(b!)), 'image/png'))
+    return originalLayerPngByLayer.current[lid]
   }
 
-  // Render a single text region as a tight-cropped transparent PNG blob URL
-  const _renderTextPng = (r: TextRegion, newText: string, offX: number, offY: number): string => {
-    const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-    const lx2 = r.bbox[2] - offX, ly2 = r.bbox[3] - offY
-    const w = Math.max(1, lx2 - lx1), h = Math.max(1, ly2 - ly1)
-    const c = document.createElement('canvas'); c.width = w; c.height = h
-    const ctx = c.getContext('2d')!
-    const [tr, tg, tb] = r.color
-    ctx.fillStyle = `rgb(${tr},${tg},${tb})`
-    ctx.font = `bold ${r.font_size}px sans-serif`
-    ctx.textBaseline = 'middle'; ctx.textAlign = 'center'
-    ctx.fillText(newText, w / 2, h / 2, w)
-    return c.toDataURL('image/png')  // sync, no async needed for preview
+  const _callEraseBg = async (editedIndices: number[]): Promise<string> => {
+    const regions = editedIndices.map(i => textRegions[i]).filter(Boolean)
+    const res = await fetch(`${baseUrl}/text/erase-bg`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        layer_id: selectedLayer!.id,
+        image_path: _getOriginalLayerPath(),
+        regions,
+      }),
+    })
+    const data = await res.json()
+    return data.path as string  // /temp/session/file.png
   }
 
-  // Live preview on every keystroke
-  const handleTextChange = async (i: number, value: string) => {
+  const _callRenderText = async (r: TextRegion, newText: string): Promise<string> => {
+    const res = await fetch(`${baseUrl}/text/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+      body: JSON.stringify({ session_id: sessionId, region: r, new_text: newText }),
+    })
+    const data = await res.json()
+    return data.path as string
+  }
+
+  // Live preview on every keystroke — debounced via ref
+  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleTextChange = (i: number, value: string) => {
     const next = { ...textEdits, [i]: value }
     setTextEdits(next)
-    if (!selectedLayer) return
-    if (!originalLayerPngByLayer.current[selectedLayer.id]) {
-      originalLayerPngByLayer.current[selectedLayer.id] = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-        ? selectedLayer.png_path : `${baseUrl}${selectedLayer.png_path}`
-    }
-    const img = await _loadLayerImg(); if (!img) return
-    const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-    const bgUrl = await _renderBg(img, next)
-    updateLayer(selectedLayer.id, { png_path: bgUrl })
+    if (!selectedLayer || !sessionId) return
+    // Save original path before first edit
+    _getOriginalLayerPath()
 
-    if (!value.trim()) return
-    const r = textRegions[i]; if (!r) return
-    const txtDataUrl = _renderTextPng(r, value, offX, offY)
-    const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-    const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const editedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
+        if (!editedIndices.length) return
 
-    const existingPid = previewLayerIds[i]
-    if (existingPid && layers.find(l => l.id === existingPid)) {
-      updateLayer(existingPid, { png_path: txtDataUrl, name: `textval:${value}` })
-    } else {
-      const pid = `${selectedLayer.id}_textpreview_${i}`
-      setPreviewLayerIds(prev => ({ ...prev, [i]: pid }))
-      addLayer({
-        ...selectedLayer,
-        id: pid,
-        name: `textval:${value}`,
-        png_path: txtDataUrl,
-        bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
-        position: { x: 0, y: 0 },
-        scale: { x: 1, y: 1 },
-        rotation: 0,
-        z_index: selectedLayer.z_index + 1 + i,
-        history: [],
-        locked: false,
-      })
-    }
+        // 1. Erase bg for all edited regions (BE uses cv2.inpaint on original)
+        const bgPath = await _callEraseBg(editedIndices)
+        updateLayer(selectedLayer.id, { png_path: bgPath })
+
+        // 2. Render each new text patch via BE and add/update preview layers
+        for (const idx of editedIndices) {
+          const r = textRegions[idx]; if (!r || !next[idx]?.trim()) continue
+          const txtPath = await _callRenderText(r, next[idx])
+          const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+          const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+          const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+          const pid = `${selectedLayer.id}_textpreview_${idx}`
+          const existingPid = previewLayerIds[idx]
+          if (existingPid && layers.find(l => l.id === existingPid)) {
+            updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[idx]}` })
+          } else {
+            setPreviewLayerIds(prev => ({ ...prev, [idx]: pid }))
+            addLayer({
+              ...selectedLayer,
+              id: pid,
+              name: `textval:${next[idx]}`,
+              png_path: txtPath,
+              bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+              position: { x: 0, y: 0 },
+              scale: { x: 1, y: 1 },
+              rotation: 0,
+              z_index: selectedLayer.z_index + 1 + idx,
+              history: [],
+              locked: false,
+            })
+          }
+        }
+      } catch (err: any) {
+        toast.error('Preview failed: ' + (err?.message || err))
+      }
+    }, 400)
   }
   handleTextChangeRef.current = handleTextChange
 
@@ -228,26 +197,24 @@ export const PropertiesPanel: React.FC = () => {
     setIsEditing(true)
     pushHistory()
     try {
-      const img = await _loadLayerImg(); if (!img) return
-      const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-      const bgUrl = await _renderBg(img, textEdits)
+      const editedIndices = edits.map(([k]) => +k)
+      const bgPath = await _callEraseBg(editedIndices)
       const textPrompt = edits.map(([i, v]) => `"${textRegions[+i]?.text}" → "${v}"`).join(', ')
-      updateLayer(selectedLayer.id, { png_path: bgUrl, history: [...selectedLayer.history, textPrompt] })
+      updateLayer(selectedLayer.id, { png_path: bgPath, history: [...selectedLayer.history, textPrompt] })
 
-      // Finalize each preview layer (already positioned correctly)
       for (const [i, newText] of edits) {
         const r = textRegions[+i]; if (!r) continue
-        const txtDataUrl = _renderTextPng(r, newText, offX, offY)
+        const txtPath = await _callRenderText(r, newText)
         const pid = previewLayerIds[+i]
         if (pid && layers.find(l => l.id === pid)) {
-          updateLayer(pid, { png_path: txtDataUrl, history: [textPrompt] })
+          updateLayer(pid, { png_path: txtPath, history: [textPrompt] })
         }
       }
       toast.success('Text updated!')
       setTextRegions([])
       setTextEdits({})
       setPreviewLayerIds({})
-      if (selectedLayer) delete originalLayerPngByLayer.current[selectedLayer.id]
+      delete originalLayerPngByLayer.current[selectedLayer.id]
     } catch (err: any) {
       toast.error('Text edit failed: ' + (err?.message || err))
     } finally { setIsEditing(false) }

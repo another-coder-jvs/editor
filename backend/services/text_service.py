@@ -63,7 +63,56 @@ def detect_text(img: Image.Image) -> List[Dict]:
     return regions
 
 
-def edit_text_in_image(orig_img: Image.Image, params: Dict[str, Any]) -> Image.Image:
+def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
+    """
+    Erase all given text regions from img using cv2.inpaint (TELEA).
+    Returns the inpainted image (RGBA preserved).
+    """
+    has_alpha = img.mode == "RGBA"
+    arr = np.array(img.convert("RGB"))
+    mask = np.zeros(arr.shape[:2], dtype=np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+    for r in regions:
+        quad_pts = np.array([[int(p[0]), int(p[1])] for p in r["quad"]], dtype=np.int32)
+        cv2.fillPoly(mask, [quad_pts], 255)
+
+    mask = cv2.dilate(mask, kernel, iterations=2)
+    inpainted = cv2.inpaint(arr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+    result = Image.fromarray(inpainted)
+    if has_alpha:
+        result = result.convert("RGBA")
+        result.putalpha(img.getchannel("A"))
+    return result
+
+
+def render_text_patch(region: dict, new_text: str) -> Image.Image:
+    """
+    Render new_text onto a transparent RGBA patch matching the region's
+    exact bbox size, color, and fitted font size.
+    """
+    bbox = region["bbox"]  # [x1, y1, x2, y2] in full-image coords
+    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    w, h = max(1, x2 - x1), max(1, y2 - y1)
+    color = region.get("color", [255, 255, 255])
+
+    patch = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(patch)
+
+    # Fit font: start at 85% of bbox height, shrink until text fits width
+    font_size = max(8, int(h * 0.85))
+    font = _load_font(font_size)
+    font, new_text = _fit_text(draw, new_text, font, w, font_size)
+
+    tb = draw.textbbox((0, 0), new_text, font=font)
+    tx = (w - (tb[2] - tb[0])) // 2
+    ty = (h - (tb[3] - tb[1])) // 2
+    draw.text((tx, ty), new_text, font=font,
+              fill=(int(color[0]), int(color[1]), int(color[2]), 255))
+    return patch
+
+
+
     """
     Edit text directly on the full original image.
     Returns the full edited image (same size as input).

@@ -20,6 +20,7 @@ export default defineConfig({
       '/export': baseUrl || 'http://localhost:8000',
       '/progress': baseUrl || 'http://localhost:8000',
       '/outputs': baseUrl || 'http://localhost:8000',
+      '/text': baseUrl || 'http://localhost:8000',
       '/temp': baseUrl || 'http://localhost:8000',
     },
   },
