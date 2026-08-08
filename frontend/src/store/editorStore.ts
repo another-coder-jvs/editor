@@ -27,6 +27,10 @@ interface EditorState {
   canvasScale: number
   canvasOffset: { x: number; y: number }
 
+  // Detected text regions per layer id
+  detectedTextRegions: Record<string, any[]>
+  setDetectedTextRegions: (layerId: string, regions: any[]) => void
+
   // Actions
   setSession: (id: string, imagePath: string, imageUrl: string, w: number, h: number) => void
   setLayers: (layers: LayerData[]) => void
@@ -61,6 +65,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redoStack: [],
   canvasScale: 1,
   canvasOffset: { x: 0, y: 0 },
+  detectedTextRegions: {},
+  setDetectedTextRegions: (layerId, regions) =>
+    set((s) => ({ detectedTextRegions: { ...s.detectedTextRegions, [layerId]: regions } })),
 
   setSession: (id, imagePath, imageUrl, w, h) =>
     set({ sessionId: id, originalImagePath: imagePath, originalImageUrl: imageUrl, canvasWidth: w, canvasHeight: h }),

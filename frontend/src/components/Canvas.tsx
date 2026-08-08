@@ -23,6 +23,8 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
   const editRef = useRef<HTMLDivElement>(null)
 
   const isTextPreview = layer.id.includes('_textpreview_')
+  const currentText = isTextPreview && layer.name.startsWith('textval:')
+    ? layer.name.slice('textval:'.length) : ''
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (inlineEditing) return
@@ -42,8 +44,8 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
     setInlineEditing(true)
     setTimeout(() => {
       if (editRef.current) {
+        editRef.current.innerText = currentText
         editRef.current.focus()
-        // place cursor at end
         const range = document.createRange()
         range.selectNodeContents(editRef.current)
         range.collapse(false)
@@ -136,11 +138,41 @@ export const Canvas: React.FC = () => {
     layers, originalImageUrl, canvasWidth, canvasHeight,
     canvasScale, canvasOffset, setCanvasScale, setCanvasOffset,
     selectedLayerIds, selectLayer, clearSelection, updateLayer,
+    detectedTextRegions,
   } = useEditorStore()
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [isPanning, setIsPanning] = useState(false)
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 })
+
+  // Inline text editor spawned directly on canvas from double-click on original image
+  const [inlineEditor, setInlineEditor] = useState<{
+    regionIdx: number; layerId: string; x: number; y: number; w: number; h: number; text: string
+  } | null>(null)
+  const inlineRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (inlineEditor && inlineRef.current) {
+      inlineRef.current.innerText = inlineEditor.text
+      inlineRef.current.focus()
+      const range = document.createRange()
+      range.selectNodeContents(inlineRef.current)
+      range.collapse(false)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+    }
+  }, [inlineEditor?.regionIdx, inlineEditor?.layerId])
+
+  const commitInlineCanvasEdit = () => {
+    if (!inlineEditor || !inlineRef.current) return
+    const newText = inlineRef.current.innerText.trim()
+    setInlineEditor(null)
+    if (newText) {
+      window.dispatchEvent(new CustomEvent('canvas-text-edit', {
+        detail: { layerId: `${inlineEditor.layerId}_textpreview_${inlineEditor.regionIdx}`, newText }
+      }))
+    }
+  }
 
   // Zoom with wheel
   const onWheel = useCallback(
@@ -226,17 +258,73 @@ export const Canvas: React.FC = () => {
           height: canvasHeight,
           boxShadow: '0 0 40px rgba(0,0,0,0.8)',
         }}
+        onDoubleClick={(e) => {
+          // Hit-test against detected text regions of the selected layer
+          const selectedLayer = layers.find(l => selectedLayerIds.includes(l.id) && !l.id.includes('_textpreview_'))
+          if (!selectedLayer) return
+          const regions = detectedTextRegions[selectedLayer.id]
+          if (!regions?.length) return
+          // Convert click coords to canvas-local coords
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+          const cx = (e.clientX - rect.left) / canvasScale
+          const cy = (e.clientY - rect.top) / canvasScale
+          for (let i = 0; i < regions.length; i++) {
+            const r = regions[i]
+            const [rx1, ry1, rx2, ry2] = r.bbox
+            // bbox is in full-image coords; layer offset
+            const lx1 = rx1 - selectedLayer.bbox.x, ly1 = ry1 - selectedLayer.bbox.y
+            const lx2 = rx2 - selectedLayer.bbox.x, ly2 = ry2 - selectedLayer.bbox.y
+            const ax = selectedLayer.bbox.x + selectedLayer.position.x + lx1
+            const ay = selectedLayer.bbox.y + selectedLayer.position.y + ly1
+            if (cx >= ax && cx <= ax + (lx2 - lx1) && cy >= ay && cy <= ay + (ly2 - ly1)) {
+              // Check if preview layer already has a value
+              const pid = `${selectedLayer.id}_textpreview_${i}`
+              const previewLayer = layers.find(l => l.id === pid)
+              const currentText = previewLayer?.name.startsWith('textval:')
+                ? previewLayer.name.slice('textval:'.length) : r.text
+              setInlineEditor({
+                regionIdx: i, layerId: selectedLayer.id,
+                x: ax, y: ay, w: lx2 - lx1, h: ly2 - ly1,
+                text: currentText,
+              })
+              e.stopPropagation()
+              return
+            }
+          }
+        }}
       >
-        {/* Background image — hidden; layers already contain the full image content */}
-        {/* Uncomment below only if you want to show original behind all layers */}
-        {/* {originalImageUrl && <img src={originalImageUrl} ... />} */}
-
         {/* Layers */}
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
           const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") || layer.png_path.startsWith("data:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
           return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} />
         })}
+
+        {/* Inline text editor overlay */}
+        {inlineEditor && (
+          <div
+            ref={inlineRef}
+            contentEditable
+            suppressContentEditableWarning
+            onBlur={commitInlineCanvasEdit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); commitInlineCanvasEdit() }
+              if (e.key === 'Escape') setInlineEditor(null)
+            }}
+            style={{
+              position: 'absolute',
+              left: inlineEditor.x, top: inlineEditor.y,
+              width: inlineEditor.w, height: inlineEditor.h,
+              fontSize: inlineEditor.h, fontWeight: 'bold',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              outline: '2px dashed #4f8ef7',
+              background: 'rgba(0,0,0,0.15)',
+              color: 'white', cursor: 'text',
+              userSelect: 'text', whiteSpace: 'nowrap', overflow: 'hidden',
+              zIndex: 9999,
+            }}
+          />
+        )}
       </div>
     </div>
   )

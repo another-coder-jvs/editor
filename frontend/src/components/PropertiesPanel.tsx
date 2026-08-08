@@ -19,6 +19,7 @@ export const PropertiesPanel: React.FC = () => {
   const {
     layers, selectedLayerIds, updateLayer, addLayer,
     sessionId, originalImagePath, pushHistory, setProgress,
+    setDetectedTextRegions,
   } = useEditorStore()
 
   const [prompt, setPrompt] = useState('')
@@ -91,6 +92,7 @@ export const PropertiesPanel: React.FC = () => {
       })
       const data = await res.json()
       setTextRegions(data.regions || [])
+      if (selectedLayer) setDetectedTextRegions(selectedLayer.id, data.regions || [])
       if (!data.regions?.length) toast.info('No text detected in this layer')
     } catch { toast.error('Text detection failed') }
     finally { setDetectingText(false) }
@@ -198,14 +200,14 @@ export const PropertiesPanel: React.FC = () => {
 
     const existingPid = previewLayerIds[i]
     if (existingPid && layers.find(l => l.id === existingPid)) {
-      updateLayer(existingPid, { png_path: txtDataUrl })
+      updateLayer(existingPid, { png_path: txtDataUrl, name: `textval:${value}` })
     } else {
       const pid = `${selectedLayer.id}_textpreview_${i}`
       setPreviewLayerIds(prev => ({ ...prev, [i]: pid }))
       addLayer({
         ...selectedLayer,
         id: pid,
-        name: `text: ${r.text}`,
+        name: `textval:${value}`,
         png_path: txtDataUrl,
         bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
         position: { x: 0, y: 0 },
