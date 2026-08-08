@@ -63,26 +63,54 @@ def detect_text(img: Image.Image) -> List[Dict]:
     return regions
 
 
-def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
-    """
-    Erase all given text regions from img using cv2.inpaint (TELEA).
-    Returns the inpainted image (RGBA preserved).
-    """
-    has_alpha = img.mode == "RGBA"
-    arr = np.array(img.convert("RGB"))
-    mask = np.zeros(arr.shape[:2], dtype=np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+_lama = None
 
+def _get_lama():
+    global _lama
+    if _lama is None:
+        try:
+            from simple_lama_inpainting import SimpleLama
+            _lama = SimpleLama()
+            logger.info("[text_service] LaMa inpainting loaded")
+        except Exception as e:
+            logger.warning(f"[text_service] LaMa unavailable ({e}), will use cv2.inpaint fallback")
+            _lama = False
+    return _lama if _lama is not False else None
+
+
+def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
+    """Erase text regions using LaMa (best quality) with cv2.inpaint fallback."""
+    has_alpha = img.mode == "RGBA"
+    alpha = img.getchannel("A") if has_alpha else None
+    rgb = img.convert("RGB")
+    arr = np.array(rgb)
+
+    # Build combined mask (white = erase)
+    mask = np.zeros(arr.shape[:2], dtype=np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     for r in regions:
         quad_pts = np.array([[int(p[0]), int(p[1])] for p in r["quad"]], dtype=np.int32)
         cv2.fillPoly(mask, [quad_pts], 255)
-
     mask = cv2.dilate(mask, kernel, iterations=2)
+
+    lama = _get_lama()
+    if lama is not None:
+        try:
+            mask_pil = Image.fromarray(mask)
+            result_rgb = lama(rgb, mask_pil)
+            result = result_rgb.convert("RGBA") if has_alpha else result_rgb
+            if has_alpha:
+                result.putalpha(alpha)
+            return result
+        except Exception as e:
+            logger.warning(f"[text_service] LaMa failed ({e}), falling back to cv2.inpaint")
+
+    # Fallback: cv2.inpaint TELEA
     inpainted = cv2.inpaint(arr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
     result = Image.fromarray(inpainted)
     if has_alpha:
         result = result.convert("RGBA")
-        result.putalpha(img.getchannel("A"))
+        result.putalpha(alpha)
     return result
 
 
