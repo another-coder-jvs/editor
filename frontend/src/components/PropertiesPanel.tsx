@@ -127,42 +127,42 @@ export const PropertiesPanel: React.FC = () => {
     setTextEdits({ ...textEdits, [i]: value })
   }
 
-  const handleTextPreview = async (next: Record<number, string>) => {
+  const handleTextPreview = async (changedIdx: number, next: Record<number, string>) => {
     if (!selectedLayer || !sessionId) return
     _getOriginalLayerPath()
     try {
-      const editedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
-      if (!editedIndices.length) return
-
-      const bgPath = await _callEraseBg(editedIndices)
+      // Erase bg for ALL edited regions (so background is clean for all)
+      const allEditedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
+      if (!allEditedIndices.length) return
+      const bgPath = await _callEraseBg(allEditedIndices)
       updateLayer(selectedLayer.id, { png_path: bgPath })
 
-      for (const idx of editedIndices) {
-        const r = textRegions[idx]; if (!r || !next[idx]?.trim()) continue
-        const txtPath = await _callRenderText(r, next[idx])
-        const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-        const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
-        const pid = `${selectedLayer.id}_textpreview_${idx}`
-        const existingPid = previewLayerIds[idx]
-        if (existingPid && layers.find(l => l.id === existingPid)) {
-          updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[idx]}` })
-        } else {
-          setPreviewLayerIds(prev => ({ ...prev, [idx]: pid }))
-          addLayer({
-            ...selectedLayer,
-            id: pid,
-            name: `textval:${next[idx]}`,
-            png_path: txtPath,
-            bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
-            position: { x: 0, y: 0 },
-            scale: { x: 1, y: 1 },
-            rotation: 0,
-            z_index: selectedLayer.z_index + 1 + idx,
-            history: [],
-            locked: false,
-          })
-        }
+      // Only render the text patch for the index that just changed
+      const r = textRegions[changedIdx]
+      if (!r || !next[changedIdx]?.trim()) return
+      const txtPath = await _callRenderText(r, next[changedIdx])
+      const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+      const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+      const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+      const pid = `${selectedLayer.id}_textpreview_${changedIdx}`
+      const existingPid = previewLayerIds[changedIdx]
+      if (existingPid && layers.find(l => l.id === existingPid)) {
+        updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[changedIdx]}` })
+      } else {
+        setPreviewLayerIds(prev => ({ ...prev, [changedIdx]: pid }))
+        addLayer({
+          ...selectedLayer,
+          id: pid,
+          name: `textval:${next[changedIdx]}`,
+          png_path: txtPath,
+          bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+          position: { x: 0, y: 0 },
+          scale: { x: 1, y: 1 },
+          rotation: 0,
+          z_index: selectedLayer.z_index + 1 + changedIdx,
+          history: [],
+          locked: false,
+        })
       }
     } catch (err: any) {
       toast.error('Preview failed: ' + (err?.message || err))
@@ -173,7 +173,7 @@ export const PropertiesPanel: React.FC = () => {
   handleTextChangeRef.current = (i: number, value: string) => {
     const next = { ...textEdits, [i]: value }
     setTextEdits(next)
-    handleTextPreview(next)
+    handleTextPreview(i, next)
   }
 
   const handleApplyTextEdits = async () => {
@@ -289,7 +289,7 @@ export const PropertiesPanel: React.FC = () => {
                       onKeyDown={e => {
                         if (e.key === 'Enter') {
                           e.preventDefault()
-                          handleTextPreview({ ...textEdits, [i]: (e.target as HTMLInputElement).value })
+                          handleTextPreview(i, { ...textEdits, [i]: (e.target as HTMLInputElement).value })
                         }
                       }}
                     />

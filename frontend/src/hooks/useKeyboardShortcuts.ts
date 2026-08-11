@@ -14,8 +14,9 @@ export function useKeyboardShortcuts() {
         selectedLayerIds.forEach((id) => duplicateLayer(id))
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const tag = (e.target as HTMLElement).tagName
-        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        const target = e.target as HTMLElement
+        const tag = target.tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !target.isContentEditable) {
           selectedLayerIds.forEach((id) => deleteLayer(id))
         }
       }
