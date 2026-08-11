@@ -1,9 +1,16 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { editLayer } from '../api/client'
 import { toast } from 'react-toastify'
 import { baseUrl } from '../config'
-import { Type } from 'lucide-react'
+import { Type, Pipette } from 'lucide-react'
+
+const hexToRgb = (hex: string): number[] => {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return [r, g, b]
+}
 
 const STYLE_PRESETS = [
   { label: 'Cartoon', prompt: 'cartoon style' },
@@ -14,12 +21,13 @@ const STYLE_PRESETS = [
 ]
 
 interface TextRegion { bbox: number[]; text: string; color: number[]; font_size: number }
+interface TextStyle { color: string; font_size: number; shadow: boolean; shadow_color: string; shadow_offset: [number,number]; rotation: number }
 
 export const PropertiesPanel: React.FC = () => {
   const {
     layers, selectedLayerIds, updateLayer, addLayer,
     sessionId, originalImagePath, pushHistory, setProgress,
-    setDetectedTextRegions,
+    setDetectedTextRegions, setTextOverlay, clearTextOverlays,
   } = useEditorStore()
 
   const [prompt, setPrompt] = useState('')
@@ -30,13 +38,16 @@ export const PropertiesPanel: React.FC = () => {
   // Text editing state
   const [textRegionsByLayer, setTextRegionsByLayer] = useState<Record<string, TextRegion[]>>({})
   const [textEditsByLayer, setTextEditsByLayer] = useState<Record<string, Record<number, string>>>({})
-  const [previewLayerIds, setPreviewLayerIds] = useState<Record<number, string>>({})
+  const [textStylesByLayer, setTextStylesByLayer] = useState<Record<string, Record<number, TextStyle>>>({})
   const [detectingText, setDetectingText] = useState(false)
+  const [eyedropper, setEyedropper] = useState<{ idx: number; field: 'color' | 'shadow_color' } | null>(null)
+  // const [previewLayerIds, setPreviewLayerIds] = useState<Record<number, string>>({})
 
   const selectedLayer = layers.find((l) => selectedLayerIds[0] === l.id)
 
   const textRegions = selectedLayer ? (textRegionsByLayer[selectedLayer.id] ?? []) : []
   const textEdits   = selectedLayer ? (textEditsByLayer[selectedLayer.id]   ?? {}) : {}
+  const textStyles  = selectedLayer ? (textStylesByLayer[selectedLayer.id]  ?? {}) : {}
 
   const setTextRegions = (regions: TextRegion[]) => {
     if (!selectedLayer) return
@@ -46,6 +57,21 @@ export const PropertiesPanel: React.FC = () => {
     if (!selectedLayer) return
     setTextEditsByLayer(prev => ({ ...prev, [selectedLayer.id]: edits }))
   }
+  const setTextStyles = (styles: Record<number, TextStyle>) => {
+    if (!selectedLayer) return
+    setTextStylesByLayer(prev => ({ ...prev, [selectedLayer.id]: styles }))
+  }
+  const updateTextStyle = (i: number, patch: Partial<TextStyle>) => {
+    setTextStyles({ ...textStyles, [i]: { ...defaultStyle(textRegions[i]), ...textStyles[i], ...patch } })
+  }
+  const defaultStyle = (r?: TextRegion): TextStyle => ({
+    color: r ? `rgb(${r.color[0]},${r.color[1]},${r.color[2]})` : '#ffffff',
+    font_size: r?.font_size ?? 24,
+    shadow: false,
+    shadow_color: '#000000',
+    shadow_offset: [2, 2],
+    rotation: 0,
+  })
 
   // Reset text state when layer changes
   const originalLayerPngByLayer = React.useRef<Record<string, string>>({})
@@ -53,9 +79,9 @@ export const PropertiesPanel: React.FC = () => {
   const handleTextChangeRef = React.useRef<(i: number, value: string) => void>(() => {})
 
   // Reset preview layer IDs when switching layers
-  useEffect(() => {
-    setPreviewLayerIds({})
-  }, [selectedLayer?.id])
+  // useEffect(() => {
+  //   setPreviewLayerIds({})
+  // }, [selectedLayer?.id])
 
   // Listen for inline canvas text edits (double-click on text layer)
   useEffect(() => {
@@ -113,11 +139,18 @@ export const PropertiesPanel: React.FC = () => {
     return data.path as string  // /temp/session/file.png
   }
 
-  const _callRenderText = async (r: TextRegion, newText: string): Promise<string> => {
+  const _callRenderText = async (r: TextRegion, newText: string, style?: TextStyle): Promise<string> => {
+    const overrides = style ? {
+      color: hexToRgb(style.color),
+      font_size: style.font_size,
+      shadow_color: style.shadow ? hexToRgb(style.shadow_color) : null,
+      shadow_offset: style.shadow_offset,
+      rotation: style.rotation,
+    } : null
     const res = await fetch(`${baseUrl}/text/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
-      body: JSON.stringify({ session_id: sessionId, region: r, new_text: newText }),
+      body: JSON.stringify({ session_id: sessionId, region: r, new_text: newText, overrides }),
     })
     const data = await res.json()
     return data.path as string
@@ -125,55 +158,36 @@ export const PropertiesPanel: React.FC = () => {
 
   const handleTextChange = (i: number, value: string) => {
     setTextEdits({ ...textEdits, [i]: value })
+    _pushOverlay(i, value, textStyles[i])
   }
 
-  const handleTextPreview = async (changedIdx: number, next: Record<number, string>) => {
-    if (!selectedLayer || !sessionId) return
-    _getOriginalLayerPath()
-    try {
-      // Erase bg for ALL edited regions (so background is clean for all)
-      const allEditedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
-      if (!allEditedIndices.length) return
-      const bgPath = await _callEraseBg(allEditedIndices)
-      updateLayer(selectedLayer.id, { png_path: bgPath })
-
-      // Only render the text patch for the index that just changed
-      const r = textRegions[changedIdx]
-      if (!r || !next[changedIdx]?.trim()) return
-      const txtPath = await _callRenderText(r, next[changedIdx])
-      const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-      const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-      const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
-      const pid = `${selectedLayer.id}_textpreview_${changedIdx}`
-      const existingPid = previewLayerIds[changedIdx]
-      if (existingPid && layers.find(l => l.id === existingPid)) {
-        updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[changedIdx]}` })
-      } else {
-        setPreviewLayerIds(prev => ({ ...prev, [changedIdx]: pid }))
-        addLayer({
-          ...selectedLayer,
-          id: pid,
-          name: `textval:${next[changedIdx]}`,
-          png_path: txtPath,
-          bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
-          position: { x: 0, y: 0 },
-          scale: { x: 1, y: 1 },
-          rotation: 0,
-          z_index: selectedLayer.z_index + 1 + changedIdx,
-          history: [],
-          locked: false,
-        })
-      }
-    } catch (err: any) {
-      toast.error('Preview failed: ' + (err?.message || err))
+  const _pushOverlay = (i: number, text: string, style?: Partial<TextStyle>) => {
+    if (!selectedLayer || !textRegions[i]) return
+    const r = textRegions[i]
+    const s: TextStyle = { ...defaultStyle(r), ...textStyles[i], ...style }
+    const key = `${selectedLayer.id}_${i}`
+    if (text.trim()) {
+      setTextOverlay(key, { text, color: s.color, font_size: s.font_size, shadow: s.shadow, shadow_color: s.shadow_color, rotation: s.rotation, bbox: r.bbox })
+    } else {
+      // clear overlay if text emptied
+      setTextOverlay(key, null)
     }
   }
 
-  // canvas double-click → Enter dispatches this; call preview directly with the new value
+  // Re-render preview when style changes for any already-typed text
+  useEffect(() => {
+    Object.entries(textStyles).forEach(([idxStr, style]) => {
+      const idx = +idxStr
+      const text = textEdits[idx]
+      if (text?.trim()) _pushOverlay(idx, text, style)
+    })
+  }, [textStyles])
+
+  // canvas double-click → dispatches this
   handleTextChangeRef.current = (i: number, value: string) => {
     const next = { ...textEdits, [i]: value }
     setTextEdits(next)
-    handleTextPreview(i, next)
+    _pushOverlay(i, value)
   }
 
   const handleApplyTextEdits = async () => {
@@ -190,16 +204,27 @@ export const PropertiesPanel: React.FC = () => {
 
       for (const [i, newText] of edits) {
         const r = textRegions[+i]; if (!r) continue
-        const txtPath = await _callRenderText(r, newText)
-        const pid = previewLayerIds[+i]
-        if (pid && layers.find(l => l.id === pid)) {
-          updateLayer(pid, { png_path: txtPath, history: [textPrompt] })
-        }
+        const txtPath = await _callRenderText(r, newText, { ...defaultStyle(r), ...textStyles[+i] })
+        // Add as a new layer on top
+        const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+        const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+        addLayer({
+          ...selectedLayer,
+          id: `${selectedLayer.id}_txt_${i}_${Date.now()}`,
+          name: `text:${newText}`,
+          png_path: txtPath,
+          bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+          position: { x: 0, y: 0 }, scale: { x: 1, y: 1 }, rotation: 0,
+          z_index: selectedLayer.z_index + 1 + +i,
+          history: [], locked: false,
+        })
       }
-      toast.success('Text updated!')
+      clearTextOverlays(selectedLayer.id)
+      toast.success('Text applied!')
       setTextRegions([])
       setTextEdits({})
-      setPreviewLayerIds({})
+      setTextStyles({})
       delete originalLayerPngByLayer.current[selectedLayer.id]
     } catch (err: any) {
       toast.error('Text edit failed: ' + (err?.message || err))
@@ -278,29 +303,66 @@ export const PropertiesPanel: React.FC = () => {
 
             {textRegions.length > 0 && (
               <div className="space-y-2">
-                {textRegions.map((r, i) => (
-                  <div key={i} className="bg-dark-700 rounded p-2">
-                    <p className="text-xs text-gray-500 mb-1 truncate">Detected: "{r.text}"</p>
+                {textRegions.map((r, i) => {
+                  const style: TextStyle = { ...defaultStyle(r), ...textStyles[i] }
+                  return (
+                  <div key={i} className="bg-dark-700 rounded p-2 space-y-1">
+                    <p className="text-xs text-gray-500 truncate">Detected: "{r.text}"</p>
                     <input
                       className="w-full bg-dark-600 text-sm text-white rounded px-2 py-1 border border-dark-500 focus:border-accent outline-none"
-                      placeholder={`${r.text} (Enter to preview)`}
+                      placeholder={r.text}
                       value={textEdits[i] ?? ''}
                       onChange={e => handleTextChange(i, e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleTextPreview(i, { ...textEdits, [i]: (e.target as HTMLInputElement).value })
-                        }
-                      }}
                     />
-                    <div className="flex items-center gap-1 mt-1">
-                      <span className="text-xs text-gray-500">Color:</span>
-                      <div className="w-4 h-4 rounded border border-dark-500"
-                        style={{ background: `rgb(${r.color[0]},${r.color[1]},${r.color[2]})` }} />
-                      <span className="text-xs text-gray-500">Size: {r.font_size}px</span>
+                    {/* Style controls */}
+                    <div className="grid grid-cols-2 gap-1">
+                      {/* Color */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-gray-400 w-10">Color</span>
+                        <input type="color" value={style.color} onChange={e => updateTextStyle(i, { color: e.target.value })}
+                          className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent" />
+                        <button title="Pick from image" onClick={() => setEyedropper(eyedropper?.idx === i && eyedropper.field === 'color' ? null : { idx: i, field: 'color' })}
+                          className={`p-0.5 rounded ${eyedropper?.idx === i && eyedropper.field === 'color' ? 'text-accent' : 'text-gray-400 hover:text-white'}`}>
+                          <Pipette size={12} />
+                        </button>
+                      </div>
+                      {/* Font size */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-gray-400 w-10">Size</span>
+                        <input type="number" min={6} max={300} value={style.font_size}
+                          onChange={e => updateTextStyle(i, { font_size: parseInt(e.target.value) || style.font_size })}
+                          className="w-14 bg-dark-600 text-xs text-white rounded px-1 py-0.5 border border-dark-500 outline-none" />
+                      </div>
+                      {/* Rotation */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-gray-400 w-10">Rotate</span>
+                        <input type="number" min={-180} max={180} value={style.rotation}
+                          onChange={e => updateTextStyle(i, { rotation: parseInt(e.target.value) || 0 })}
+                          className="w-14 bg-dark-600 text-xs text-white rounded px-1 py-0.5 border border-dark-500 outline-none" />
+                      </div>
+                      {/* Shadow toggle */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-gray-400 w-10">Shadow</span>
+                        <input type="checkbox" checked={style.shadow} onChange={e => updateTextStyle(i, { shadow: e.target.checked })} />
+                        {style.shadow && (
+                          <>
+                            <input type="color" value={style.shadow_color} onChange={e => updateTextStyle(i, { shadow_color: e.target.value })}
+                              className="w-5 h-5 rounded cursor-pointer border-0 bg-transparent" />
+                            <button title="Pick shadow color from image" onClick={() => setEyedropper(eyedropper?.idx === i && eyedropper.field === 'shadow_color' ? null : { idx: i, field: 'shadow_color' })}
+                              className={`p-0.5 rounded ${eyedropper?.idx === i && eyedropper.field === 'shadow_color' ? 'text-accent' : 'text-gray-400 hover:text-white'}`}>
+                              <Pipette size={12} />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
+                    {/* Eyedropper canvas overlay */}
+                    {eyedropper?.idx === i && (
+                      <EyedropperCanvas onPick={(hex) => { updateTextStyle(i, { [eyedropper.field]: hex }); setEyedropper(null) }} />
+                    )}
                   </div>
-                ))}
+                  )
+                })}
                 <button onClick={handleApplyTextEdits} disabled={isEditing || !Object.values(textEdits).some(v => v.trim())}
                   className="w-full bg-accent hover:bg-accent-hover text-white text-sm py-1.5 rounded disabled:opacity-40">
                   {isEditing ? 'Applying…' : 'Apply Text Changes'}
@@ -364,3 +426,19 @@ const Slider: React.FC<{
       onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />
   </div>
 )
+
+const EyedropperCanvas: React.FC<{ onPick: (hex: string) => void }> = ({ onPick }) => {
+  useEffect(() => {
+    const pick = async () => {
+      try {
+        // @ts-ignore
+        const dropper = new (window as any).EyeDropper()
+        const result = await dropper.open()
+        onPick(result.sRGBHex)
+      } catch {}
+    }
+    pick()
+  }, [])
+  return null
+}
+

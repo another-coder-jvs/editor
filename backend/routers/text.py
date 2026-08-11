@@ -31,6 +31,7 @@ class RenderTextRequest(BaseModel):
     session_id: str
     region: Any            # region dict: bbox, color, font_size, quad
     new_text: str
+    overrides: Any = None  # { color, font_size, shadow_color, shadow_offset, rotation }
 
 
 @router.post("/detect")
@@ -89,7 +90,7 @@ def erase_bg(req: EraseBgRequest):
 @router.post("/render")
 def render_text(req: RenderTextRequest):
     """Render new_text onto a transparent PNG matching the region's style."""
-    result = render_text_patch(req.region, req.new_text)
+    result = render_text_patch(req.region, req.new_text, req.overrides)
 
     out_name = f"textpatch_{uuid.uuid4().hex[:8]}.png"
     out_path = config.TEMP_DIR / req.session_id / out_name

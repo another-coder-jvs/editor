@@ -138,7 +138,7 @@ export const Canvas: React.FC = () => {
     layers, originalImageUrl, canvasWidth, canvasHeight,
     canvasScale, canvasOffset, setCanvasScale, setCanvasOffset,
     selectedLayerIds, selectLayer, clearSelection, updateLayer,
-    detectedTextRegions,
+    detectedTextRegions, textOverlays,
   } = useEditorStore()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -298,6 +298,29 @@ export const Canvas: React.FC = () => {
           const isSelected = selectedLayerIds.includes(layer.id)
           const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") || layer.png_path.startsWith("data:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
           return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} />
+        })}
+
+        {/* Live text overlays (no API, pure CSS preview) */}
+        {Object.entries(textOverlays).map(([key, ov]) => {
+          const [x1, y1, x2, y2] = ov.bbox
+          const w = x2 - x1, h = y2 - y1
+          return (
+            <div key={key} style={{
+              position: 'absolute', left: x1, top: y1, width: w, height: h,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: ov.font_size, fontWeight: 'bold',
+              color: ov.color,
+              transform: `rotate(${ov.rotation}deg)`,
+              transformOrigin: 'center center',
+              textShadow: ov.shadow ? `2px 2px 0 ${ov.shadow_color}` : 'none',
+              pointerEvents: 'none',
+              whiteSpace: 'nowrap',
+              overflow: 'visible',
+              zIndex: 9999,
+            }}>
+              {ov.text}
+            </div>
+          )
         })}
 
         {/* Inline text editor overlay */}

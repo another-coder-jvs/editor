@@ -31,6 +31,11 @@ interface EditorState {
   detectedTextRegions: Record<string, any[]>
   setDetectedTextRegions: (layerId: string, regions: any[]) => void
 
+  // Live text overlays for preview (no API, pure CSS)
+  textOverlays: Record<string, { text: string; color: string; font_size: number; shadow: boolean; shadow_color: string; rotation: number; bbox: number[] }>
+  setTextOverlay: (key: string, overlay: any) => void
+  clearTextOverlays: (layerId: string) => void
+
   // Actions
   setSession: (id: string, imagePath: string, imageUrl: string, w: number, h: number) => void
   setLayers: (layers: LayerData[]) => void
@@ -68,6 +73,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   detectedTextRegions: {},
   setDetectedTextRegions: (layerId, regions) =>
     set((s) => ({ detectedTextRegions: { ...s.detectedTextRegions, [layerId]: regions } })),
+
+  textOverlays: {},
+  setTextOverlay: (key, overlay) =>
+    set((s) => ({ textOverlays: { ...s.textOverlays, [key]: overlay } })),
+  clearTextOverlays: (layerId) =>
+    set((s) => ({
+      textOverlays: Object.fromEntries(Object.entries(s.textOverlays).filter(([k]) => !k.startsWith(layerId + '_')))
+    })),
+
+  textOverlays: {},
+  setTextOverlay: (key, overlay) =>
+    set((s) => ({ textOverlays: { ...s.textOverlays, [key]: overlay } })),
+  clearTextOverlays: (layerId) =>
+    set((s) => ({
+      textOverlays: Object.fromEntries(Object.entries(s.textOverlays).filter(([k]) => !k.startsWith(layerId + '_')))
+    })),
 
   setSession: (id, imagePath, imageUrl, w, h) =>
     set({ sessionId: id, originalImagePath: imagePath, originalImageUrl: imageUrl, canvasWidth: w, canvasHeight: h }),
@@ -168,5 +189,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       undoStack: [],
       redoStack: [],
       progress: null,
+      detectedTextRegions: {},
+      textOverlays: {},
     }),
 }))

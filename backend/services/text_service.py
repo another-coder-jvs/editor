@@ -188,35 +188,55 @@ def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
     return result
 
 
-def render_text_patch(region: dict, new_text: str) -> Image.Image:
+def render_text_patch(region: dict, new_text: str, overrides: dict | None = None) -> Image.Image:
     """
     Render new_text onto a transparent RGBA patch at the exact bbox size.
-    Font size is fitted to match the original glyph height precisely.
-    Text is baseline-aligned to match the original quad geometry.
+    overrides: { color, font_size, shadow_color, shadow_offset, rotation }
     """
-    bbox = region["bbox"]  # [x1, y1, x2, y2] in full-image coords
+    ov = overrides or {}
+    bbox = region["bbox"]
     x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
     w, h = max(1, x2 - x1), max(1, y2 - y1)
-    color = region.get("color", [255, 255, 255])
+    color = ov.get("color", region.get("color", [255, 255, 255]))
+    font_size_override = ov.get("font_size")
+    shadow_color = ov.get("shadow_color")       # e.g. [0,0,0] or None
+    shadow_offset = ov.get("shadow_offset", [2, 2])
+    rotation = ov.get("rotation", 0)
 
-    patch = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    # Render on a larger canvas if rotated so text isn't clipped
+    pad = int(max(w, h) * 0.5) if rotation else 0
+    cw, ch = w + pad * 2, h + pad * 2
+
+    patch = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
     draw = ImageDraw.Draw(patch)
 
-    # Fit font to cap-height: start at 90% of bbox height
-    font_size = max(8, int(h * 0.90))
+    font_size = font_size_override if font_size_override else max(8, int(h * 0.90))
     font = _load_font(font_size)
-    font, new_text = _fit_text(draw, new_text, font, w, font_size)
+    font, new_text = _fit_text(draw, new_text, font, cw, font_size)
 
     tb = draw.textbbox((0, 0), new_text, font=font)
     text_w = tb[2] - tb[0]
     text_h = tb[3] - tb[1]
+    tx = max(0, (cw - text_w) // 2) - tb[0]
+    ty = max(0, (ch - text_h) // 2) - tb[1]
 
-    # Center both axes, compensate for textbbox internal offset
-    tx = max(0, (w - text_w) // 2) - tb[0]
-    ty = max(0, (h - text_h) // 2) - tb[1]
+    # Shadow
+    if shadow_color:
+        sx, sy = int(shadow_offset[0]), int(shadow_offset[1])
+        draw.text((tx + sx, ty + sy), new_text, font=font,
+                  fill=(int(shadow_color[0]), int(shadow_color[1]), int(shadow_color[2]), 180))
 
     draw.text((tx, ty), new_text, font=font,
               fill=(int(color[0]), int(color[1]), int(color[2]), 255))
+
+    if rotation:
+        patch = patch.rotate(-rotation, expand=True, resample=Image.BICUBIC)
+        # Crop back to original bbox size centered
+        pw, ph = patch.size
+        left = (pw - w) // 2
+        top  = (ph - h) // 2
+        patch = patch.crop((left, top, left + w, top + h))
+
     return patch
 
 

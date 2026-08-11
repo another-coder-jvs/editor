@@ -42,6 +42,7 @@ async def delete_project(project_name: str):
         raise HTTPException(status_code=404, detail="Project not found")
     project_path.unlink()
     return {"status": "deleted"}
+@router.post("/load")
 async def load_project(req: LoadRequest):
     project_path = PROJECTS_DIR / f"{req.project_name}.json"
     logger.info(f"[project/load] name={req.project_name} path={project_path}")
