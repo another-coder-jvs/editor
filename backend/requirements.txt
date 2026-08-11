@@ -15,7 +15,7 @@ safetensors>=0.4.3
 # Computer Vision
 opencv-python-headless>=4.10.0
 Pillow>=10.3.0
-numpy>=1.26.4
+numpy>=1.24.4,<2.0
 
 # Segmentation
 segment-anything>=1.0
