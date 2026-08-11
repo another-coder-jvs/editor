@@ -37,8 +37,6 @@ aiofiles>=23.2.1
 psutil>=5.9.0
 pytest>=8.2.2
 pytest-asyncio>=0.23.7
-sam2
-fastapi
-uvicorn
+sam2>=1.1.0
 pyngrok
 nest_asyncio
