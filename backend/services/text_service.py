@@ -122,9 +122,9 @@ def _build_glyph_mask(arr: np.ndarray, quad_pts: np.ndarray) -> np.ndarray:
         # Morphological cleanup: remove isolated noise, keep connected glyphs
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         ink_mask_crop = cv2.morphologyEx(ink_mask_crop, cv2.MORPH_OPEN, k)
-        # Expand by 1px to cover anti-aliased edges
-        k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        ink_mask_crop = cv2.dilate(ink_mask_crop, k2, iterations=1)
+        # Expand by 3px to cover anti-aliased edges and blurry halos
+        k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        ink_mask_crop = cv2.dilate(ink_mask_crop, k2, iterations=2)
 
         # Place crop mask back into full-image mask, clipped to quad polygon
         full_mask = np.zeros((H, W), dtype=np.uint8)
@@ -177,8 +177,9 @@ def erase_text_regions(img: Image.Image, regions: list) -> Image.Image:
         except Exception as e:
             logger.warning(f"[text_service] LaMa failed ({e}), falling back to cv2.inpaint")
 
-    # Fallback: cv2.inpaint TELEA on tight glyph mask
-    inpainted = cv2.inpaint(arr, combined_mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
+    # Fallback: cv2.inpaint TELEA on tight glyph mask — two passes for cleaner result
+    inpainted = cv2.inpaint(arr, combined_mask, inpaintRadius=8, flags=cv2.INPAINT_TELEA)
+    inpainted = cv2.inpaint(inpainted, combined_mask, inpaintRadius=4, flags=cv2.INPAINT_NS)
     result = Image.fromarray(inpainted)
     if has_alpha:
         result = result.convert("RGBA")
@@ -206,19 +207,13 @@ def render_text_patch(region: dict, new_text: str) -> Image.Image:
     font = _load_font(font_size)
     font, new_text = _fit_text(draw, new_text, font, w, font_size)
 
-    # Align to baseline: use ascent to position text so baseline matches original
-    try:
-        ascent, descent = font.getmetrics()
-    except Exception:
-        ascent, descent = font_size, int(font_size * 0.2)
-
     tb = draw.textbbox((0, 0), new_text, font=font)
     text_w = tb[2] - tb[0]
     text_h = tb[3] - tb[1]
 
-    # Center horizontally, align baseline to bottom of bbox (minus descent)
-    tx = (w - text_w) // 2
-    ty = h - descent - text_h + (tb[1])  # baseline-anchored
+    # Center both axes, compensate for textbbox internal offset
+    tx = max(0, (w - text_w) // 2) - tb[0]
+    ty = max(0, (h - text_h) // 2) - tb[1]
 
     draw.text((tx, ty), new_text, font=font,
               fill=(int(color[0]), int(color[1]), int(color[2]), 255))
@@ -272,20 +267,26 @@ def edit_text_in_image(orig_img: Image.Image, params: Dict[str, Any]) -> Image.I
         text_color = _text_color(crop_rgb)
         font_size = max(8, h)
 
-        # ── 1. Erase original text with tight glyph mask + cv2.inpaint ──
+        # ── 1. Erase original text with tight glyph mask + two-pass inpaint ──
         glyph_mask = _build_glyph_mask(arr, quad_pts)
-        inpainted = cv2.inpaint(result_arr, glyph_mask, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
+        inpainted = cv2.inpaint(result_arr, glyph_mask, inpaintRadius=8, flags=cv2.INPAINT_TELEA)
+        inpainted = cv2.inpaint(inpainted, glyph_mask, inpaintRadius=4, flags=cv2.INPAINT_NS)
         result_arr = inpainted
 
         # ── 2. Render new text onto a transparent patch ──
         patch_h, patch_w = h, w
         patch = Image.new("RGBA", (patch_w, patch_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(patch)
+        # Start at full bbox height and shrink only if text overflows width
+        font_size = max(8, int(h * 0.90))
         font = _load_font(font_size)
         font, render_text = _fit_text(draw, new_text, font, patch_w, font_size)
         tb = draw.textbbox((0, 0), render_text, font=font)
-        tx = (patch_w - (tb[2] - tb[0])) // 2
-        ty = (patch_h - (tb[3] - tb[1])) // 2
+        text_w = tb[2] - tb[0]
+        text_h = tb[3] - tb[1]
+        # Center both horizontally and vertically, offset by textbbox top offset
+        tx = max(0, (patch_w - text_w) // 2) - tb[0]
+        ty = max(0, (patch_h - text_h) // 2) - tb[1]
         draw.text((tx, ty), render_text, font=font,
                   fill=(int(text_color[0]), int(text_color[1]), int(text_color[2]), 255))
 
