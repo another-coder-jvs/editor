@@ -69,18 +69,6 @@ export const PropertiesPanel: React.FC = () => {
     return () => window.removeEventListener('canvas-text-edit', handler)
   }, [])
 
-  // Listen for inline canvas text edits (double-click on text layer)
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const { layerId, newText } = (e as CustomEvent).detail
-      const match = layerId.match(/_textpreview_(\d+)$/)
-      if (!match) return
-      handleTextChangeRef.current(parseInt(match[1]), newText)
-    }
-    window.addEventListener('canvas-text-edit', handler)
-    return () => window.removeEventListener('canvas-text-edit', handler)
-  }, [])
-
   const handleDetectText = async () => {
     if (!selectedLayer || !sessionId) return
     setDetectingText(true)
@@ -135,60 +123,58 @@ export const PropertiesPanel: React.FC = () => {
     return data.path as string
   }
 
-  // Live preview on every keystroke — debounced via ref
-  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-
   const handleTextChange = (i: number, value: string) => {
+    setTextEdits({ ...textEdits, [i]: value })
+  }
+
+  const handleTextPreview = async (next: Record<number, string>) => {
+    if (!selectedLayer || !sessionId) return
+    _getOriginalLayerPath()
+    try {
+      const editedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
+      if (!editedIndices.length) return
+
+      const bgPath = await _callEraseBg(editedIndices)
+      updateLayer(selectedLayer.id, { png_path: bgPath })
+
+      for (const idx of editedIndices) {
+        const r = textRegions[idx]; if (!r || !next[idx]?.trim()) continue
+        const txtPath = await _callRenderText(r, next[idx])
+        const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
+        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+        const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
+        const pid = `${selectedLayer.id}_textpreview_${idx}`
+        const existingPid = previewLayerIds[idx]
+        if (existingPid && layers.find(l => l.id === existingPid)) {
+          updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[idx]}` })
+        } else {
+          setPreviewLayerIds(prev => ({ ...prev, [idx]: pid }))
+          addLayer({
+            ...selectedLayer,
+            id: pid,
+            name: `textval:${next[idx]}`,
+            png_path: txtPath,
+            bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+            position: { x: 0, y: 0 },
+            scale: { x: 1, y: 1 },
+            rotation: 0,
+            z_index: selectedLayer.z_index + 1 + idx,
+            history: [],
+            locked: false,
+          })
+        }
+      }
+    } catch (err: any) {
+      toast.error('Preview failed: ' + (err?.message || err))
+    }
+  }
+
+  // canvas double-click → Enter dispatches this; call preview directly with the new value
+  handleTextChangeRef.current = (i: number, value: string) => {
     const next = { ...textEdits, [i]: value }
     setTextEdits(next)
-    if (!selectedLayer || !sessionId) return
-    // Save original path before first edit
-    _getOriginalLayerPath()
-
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const editedIndices = Object.entries(next).filter(([, v]) => v.trim()).map(([k]) => +k)
-        if (!editedIndices.length) return
-
-        // 1. Erase bg for all edited regions (BE uses cv2.inpaint on original)
-        const bgPath = await _callEraseBg(editedIndices)
-        updateLayer(selectedLayer.id, { png_path: bgPath })
-
-        // 2. Render each new text patch via BE and add/update preview layers
-        for (const idx of editedIndices) {
-          const r = textRegions[idx]; if (!r || !next[idx]?.trim()) continue
-          const txtPath = await _callRenderText(r, next[idx])
-          const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-          const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
-          const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
-          const pid = `${selectedLayer.id}_textpreview_${idx}`
-          const existingPid = previewLayerIds[idx]
-          if (existingPid && layers.find(l => l.id === existingPid)) {
-            updateLayer(existingPid, { png_path: txtPath, name: `textval:${next[idx]}` })
-          } else {
-            setPreviewLayerIds(prev => ({ ...prev, [idx]: pid }))
-            addLayer({
-              ...selectedLayer,
-              id: pid,
-              name: `textval:${next[idx]}`,
-              png_path: txtPath,
-              bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
-              position: { x: 0, y: 0 },
-              scale: { x: 1, y: 1 },
-              rotation: 0,
-              z_index: selectedLayer.z_index + 1 + idx,
-              history: [],
-              locked: false,
-            })
-          }
-        }
-      } catch (err: any) {
-        toast.error('Preview failed: ' + (err?.message || err))
-      }
-    }, 400)
+    handleTextPreview(next)
   }
-  handleTextChangeRef.current = handleTextChange
 
   const handleApplyTextEdits = async () => {
     if (!selectedLayer || !sessionId) return
@@ -297,9 +283,15 @@ export const PropertiesPanel: React.FC = () => {
                     <p className="text-xs text-gray-500 mb-1 truncate">Detected: "{r.text}"</p>
                     <input
                       className="w-full bg-dark-600 text-sm text-white rounded px-2 py-1 border border-dark-500 focus:border-accent outline-none"
-                      placeholder={r.text}
+                      placeholder={`${r.text} (Enter to preview)`}
                       value={textEdits[i] ?? ''}
                       onChange={e => handleTextChange(i, e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleTextPreview({ ...textEdits, [i]: (e.target as HTMLInputElement).value })
+                        }
+                      }}
                     />
                     <div className="flex items-center gap-1 mt-1">
                       <span className="text-xs text-gray-500">Color:</span>
