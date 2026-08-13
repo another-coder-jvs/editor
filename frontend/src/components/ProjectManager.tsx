@@ -51,10 +51,23 @@ export const ProjectManager: React.FC<Props> = ({ onClose, onNew }) => {
 
   const openProject = async (name: string) => {
     const data: any = await loadProject(name)
-    setSession(data.session_id, data.original_image_path, '', data.canvas_width, data.canvas_height)
-    setLayers(data.layers)
-    toast.info(`Project "${name}" loaded`)
-    onClose()
+    // fetch the original image to get a valid blob URL
+    const imagePath = data.original_image_path || ''
+    const imageUrl = imagePath ? `${baseUrl}/temp/${imagePath.replace(/^\/temp\//, '').replace(/^\//, '')}` : ''
+    const tryLoad = (url: string) => {
+      setSession(data.session_id, imagePath, url, data.canvas_width, data.canvas_height)
+      setLayers(data.layers)
+      toast.info(`Project "${name}" loaded`)
+      onClose()
+    }
+    if (imageUrl) {
+      fetch(imageUrl, { headers: { 'ngrok-skip-browser-warning': '1' } })
+        .then(r => r.blob())
+        .then(blob => { const u = URL.createObjectURL(blob); const img = new Image(); img.onload = () => tryLoad(u); img.onerror = () => tryLoad(imageUrl); img.src = u })
+        .catch(() => tryLoad(imageUrl))
+    } else {
+      tryLoad(imageUrl)
+    }
   }
 
   const removeSession = async (id: string, e: React.MouseEvent) => {

@@ -24,13 +24,19 @@ interface EditorState {
   undoStack: LayerData[][]
   redoStack: LayerData[][]
 
-  // Canvas transform
+  // Project name
+  currentProjectName: string | null
+  setCurrentProjectName: (name: string) => void
   canvasScale: number
   canvasOffset: { x: number; y: number }
 
   // Detected text regions per layer id
   detectedTextRegions: Record<string, any[]>
   setDetectedTextRegions: (layerId: string, regions: any[]) => void
+
+  // Text regions shown in PropertiesPanel (persisted)
+  textRegionsByLayer: Record<string, any[]>
+  setTextRegionsByLayer: (layerId: string, regions: any[]) => void
 
   // Live text overlays for preview (no API, pure CSS)
   textOverlays: Record<string, { text: string; color: string; font_size: number; shadow: boolean; shadow_color: string; rotation: number; bbox: number[] }>
@@ -69,11 +75,17 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
   progress: null,
   undoStack: [],
   redoStack: [],
+  currentProjectName: null,
+  setCurrentProjectName: (name) => set({ currentProjectName: name }),
   canvasScale: 1,
   canvasOffset: { x: 0, y: 0 },
   detectedTextRegions: {},
   setDetectedTextRegions: (layerId, regions) =>
     set((s) => ({ detectedTextRegions: { ...s.detectedTextRegions, [layerId]: regions } })),
+
+  textRegionsByLayer: {},
+  setTextRegionsByLayer: (layerId, regions) =>
+    set((s) => ({ textRegionsByLayer: { ...s.textRegionsByLayer, [layerId]: regions } })),
 
   textOverlays: {},
   setTextOverlay: (key, overlay) =>
@@ -191,7 +203,9 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       redoStack: [],
       progress: null,
       detectedTextRegions: {},
+      textRegionsByLayer: {},
       textOverlays: {},
+      currentProjectName: null,
     }),
 }), {
   name: 'editor-store',
@@ -205,6 +219,8 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
     selectedLayerIds: s.selectedLayerIds,
     canvasScale: s.canvasScale,
     canvasOffset: s.canvasOffset,
+    currentProjectName: s.currentProjectName,
     detectedTextRegions: s.detectedTextRegions,
+    textRegionsByLayer: s.textRegionsByLayer,
   }),
 }))

@@ -25,11 +25,12 @@ interface Props {
 
 export const Toolbar: React.FC<Props> = ({ onExport, onOpenProjects }) => {
   const { activeTool, setActiveTool, undo, redo, undoStack, redoStack,
-          sessionId, originalImagePath, layers, canvasWidth, canvasHeight, canvasOffset } = useEditorStore()
+          sessionId, originalImagePath, layers, canvasWidth, canvasHeight, canvasOffset,
+          currentProjectName, setCurrentProjectName } = useEditorStore()
 
   const handleSave = async () => {
     if (!sessionId || !originalImagePath) { toast.warn('Nothing to save'); return }
-    const name = `project_${Date.now()}`
+    const name = currentProjectName || `project_${sessionId.slice(0, 8)}`
     try {
       await saveProject({
         session_id: sessionId,
@@ -42,7 +43,8 @@ export const Toolbar: React.FC<Props> = ({ onExport, onOpenProjects }) => {
         settings: {},
         prompts: layers.flatMap(l => l.history),
       })
-      toast.success(`Saved as "${name}"`)
+      setCurrentProjectName(name)
+      toast.success(`Saved "${name}"`)
     } catch { toast.error('Save failed') }
   }
 
