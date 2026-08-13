@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { LayerData, Tool, ProgressInfo } from '../types'
 
 interface EditorState {
@@ -56,7 +57,7 @@ interface EditorState {
   reset: () => void
 }
 
-export const useEditorStore = create<EditorState>((set, get) => ({
+export const useEditorStore = create<EditorState>()(persist((set, get) => ({
   sessionId: null,
   originalImagePath: null,
   originalImageUrl: null,
@@ -192,4 +193,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       detectedTextRegions: {},
       textOverlays: {},
     }),
+}), {
+  name: 'editor-store',
+  partialize: (s) => ({
+    sessionId: s.sessionId,
+    originalImagePath: s.originalImagePath,
+    originalImageUrl: s.originalImageUrl,
+    canvasWidth: s.canvasWidth,
+    canvasHeight: s.canvasHeight,
+    layers: s.layers,
+    selectedLayerIds: s.selectedLayerIds,
+    canvasScale: s.canvasScale,
+    canvasOffset: s.canvasOffset,
+    detectedTextRegions: s.detectedTextRegions,
+  }),
 }))

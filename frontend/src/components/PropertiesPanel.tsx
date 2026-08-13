@@ -73,8 +73,80 @@ export const PropertiesPanel: React.FC = () => {
     rotation: 0,
   })
 
+  // Track created text layer IDs per region so re-apply updates instead of creates
+  const txtLayerIds = React.useRef<Record<string, string>>({})
+
   // Reset text state when layer changes
   const originalLayerPngByLayer = React.useRef<Record<string, string>>({})
+
+  // ── Text layer direct editor (when a txt_ layer is selected) ──────────────
+  const isTxtLayer = selectedLayer?.id.includes('_txt_')
+  const [txtLayerText, setTxtLayerText] = useState('')
+  const [txtLayerColor, setTxtLayerColor] = useState('#ffffff')
+  const [txtLayerFontSize, setTxtLayerFontSize] = useState(24)
+  const [txtLayerWidth, setTxtLayerWidth] = useState(0)
+  const [txtLayerHeight, setTxtLayerHeight] = useState(0)
+  const [txtLayerRegion, setTxtLayerRegion] = useState<TextRegion | null>(null)
+
+  // Populate controls when a txt_ layer is selected
+  useEffect(() => {
+    if (!selectedLayer || !isTxtLayer) return
+    const name = selectedLayer.name.startsWith('text:') ? selectedLayer.name.slice(5) : selectedLayer.name
+    setTxtLayerText(name)
+    setTxtLayerWidth(selectedLayer.bbox.width)
+    setTxtLayerHeight(selectedLayer.bbox.height)
+    // Reconstruct a minimal region from the layer's bbox (full-image coords)
+    setTxtLayerRegion({
+      bbox: [selectedLayer.bbox.x, selectedLayer.bbox.y, selectedLayer.bbox.x + selectedLayer.bbox.width, selectedLayer.bbox.y + selectedLayer.bbox.height],
+      text: name,
+      color: [255, 255, 255],
+      font_size: selectedLayer.bbox.height,
+    })
+    setTxtLayerFontSize(selectedLayer.bbox.height)
+  }, [selectedLayer?.id])
+
+  const handleUpdateTxtLayer = async () => {
+    if (!selectedLayer || !sessionId || !txtLayerRegion) return
+    setIsEditing(true)
+    try {
+      const region = { ...txtLayerRegion, bbox: [selectedLayer.bbox.x, selectedLayer.bbox.y, selectedLayer.bbox.x + txtLayerWidth, selectedLayer.bbox.y + txtLayerHeight], font_size: txtLayerFontSize }
+      const overrides = { color: hexToRgb(txtLayerColor), font_size: txtLayerFontSize, shadow_color: null, shadow_offset: [2,2], rotation: selectedLayer.rotation }
+      const res = await fetch(`${baseUrl}/text/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+        body: JSON.stringify({ session_id: sessionId, region, new_text: txtLayerText, overrides }),
+      })
+      const data = await res.json()
+      updateLayer(selectedLayer.id, {
+        png_path: data.path,
+        name: `text:${txtLayerText}`,
+        bbox: { ...selectedLayer.bbox, width: txtLayerWidth, height: txtLayerHeight },
+      })
+      setTextOverlay(`txtlayer_${selectedLayer.id}`, null)
+      toast.success('Text layer updated!')
+    } catch (err: any) {
+      toast.error('Update failed: ' + (err?.message || err))
+    } finally { setIsEditing(false) }
+  }
+
+  // Live preview for txt_ layer editor
+  useEffect(() => {
+    if (!selectedLayer || !isTxtLayer) return
+    const key = `txtlayer_${selectedLayer.id}`
+    if (txtLayerText.trim()) {
+      setTextOverlay(key, {
+        text: txtLayerText,
+        color: txtLayerColor,
+        font_size: txtLayerFontSize,
+        shadow: false,
+        shadow_color: '#000000',
+        rotation: selectedLayer.rotation,
+        bbox: [selectedLayer.bbox.x, selectedLayer.bbox.y, selectedLayer.bbox.x + txtLayerWidth, selectedLayer.bbox.y + txtLayerHeight],
+      })
+    } else {
+      setTextOverlay(key, null)
+    }
+  }, [txtLayerText, txtLayerColor, txtLayerFontSize, txtLayerWidth, txtLayerHeight])
 
   const handleTextChangeRef = React.useRef<(i: number, value: string) => void>(() => {})
 
@@ -87,6 +159,11 @@ export const PropertiesPanel: React.FC = () => {
   useEffect(() => {
     const handler = (e: Event) => {
       const { layerId, newText } = (e as CustomEvent).detail
+      // txt_ layer double-click edit
+      if (layerId.includes('_txt_')) {
+        setTxtLayerText(newText)
+        return
+      }
       const match = layerId.match(/_textpreview_(\d+)$/)
       if (!match) return
       handleTextChangeRef.current(parseInt(match[1]), newText)
@@ -205,20 +282,27 @@ export const PropertiesPanel: React.FC = () => {
       for (const [i, newText] of edits) {
         const r = textRegions[+i]; if (!r) continue
         const txtPath = await _callRenderText(r, newText, { ...defaultStyle(r), ...textStyles[+i] })
-        // Add as a new layer on top
         const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
         const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
         const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
-        addLayer({
-          ...selectedLayer,
-          id: `${selectedLayer.id}_txt_${i}_${Date.now()}`,
-          name: `text:${newText}`,
-          png_path: txtPath,
-          bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
-          position: { x: 0, y: 0 }, scale: { x: 1, y: 1 }, rotation: 0,
-          z_index: selectedLayer.z_index + 1 + +i,
-          history: [], locked: false,
-        })
+        const regionKey = `${selectedLayer.id}_${i}`
+        const existingTxtId = txtLayerIds.current[regionKey]
+        if (existingTxtId && layers.find(l => l.id === existingTxtId)) {
+          updateLayer(existingTxtId, { png_path: txtPath, name: `text:${newText}` })
+        } else {
+          const newId = `${selectedLayer.id}_txt_${i}_${Date.now()}`
+          txtLayerIds.current[regionKey] = newId
+          addLayer({
+            ...selectedLayer,
+            id: newId,
+            name: `text:${newText}`,
+            png_path: txtPath,
+            bbox: { x: selectedLayer.bbox.x + lx1, y: selectedLayer.bbox.y + ly1, width: w, height: h },
+            position: { x: 0, y: 0 }, scale: { x: 1, y: 1 }, rotation: 0,
+            z_index: selectedLayer.z_index + 1 + +i,
+            history: [], locked: false,
+          })
+        }
       }
       clearTextOverlays(selectedLayer.id)
       toast.success('Text applied!')
@@ -370,6 +454,48 @@ export const PropertiesPanel: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* ── Text Layer Editor (when a rendered text layer is selected) ── */}
+          {isTxtLayer && (
+            <div className="border-t border-dark-600 pt-3 space-y-2">
+              <p className="text-xs text-gray-400 flex items-center gap-1"><Type size={12} /> Edit Text Layer</p>
+              <input
+                className="w-full bg-dark-600 text-sm text-white rounded px-2 py-1 border border-dark-500 focus:border-accent outline-none"
+                value={txtLayerText}
+                onChange={e => setTxtLayerText(e.target.value)}
+                placeholder="Text content"
+              />
+              <div className="grid grid-cols-2 gap-1">
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-400 w-10">Color</span>
+                  <input type="color" value={txtLayerColor} onChange={e => setTxtLayerColor(e.target.value)}
+                    className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent" />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-400 w-10">Size</span>
+                  <input type="number" min={6} max={300} value={txtLayerFontSize}
+                    onChange={e => setTxtLayerFontSize(parseInt(e.target.value) || txtLayerFontSize)}
+                    className="w-14 bg-dark-600 text-xs text-white rounded px-1 py-0.5 border border-dark-500 outline-none" />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-400 w-10">Width</span>
+                  <input type="number" min={1} value={txtLayerWidth}
+                    onChange={e => setTxtLayerWidth(parseInt(e.target.value) || txtLayerWidth)}
+                    className="w-14 bg-dark-600 text-xs text-white rounded px-1 py-0.5 border border-dark-500 outline-none" />
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-400 w-10">Height</span>
+                  <input type="number" min={1} value={txtLayerHeight}
+                    onChange={e => setTxtLayerHeight(parseInt(e.target.value) || txtLayerHeight)}
+                    className="w-14 bg-dark-600 text-xs text-white rounded px-1 py-0.5 border border-dark-500 outline-none" />
+                </div>
+              </div>
+              <button onClick={handleUpdateTxtLayer} disabled={isEditing}
+                className="w-full bg-accent hover:bg-accent-hover text-white text-sm py-1.5 rounded disabled:opacity-40">
+                {isEditing ? 'Updating…' : 'Update Text Layer'}
+              </button>
+            </div>
+          )}
 
           {/* ── AI Edit ── */}
           <div className="border-t border-dark-600 pt-3">

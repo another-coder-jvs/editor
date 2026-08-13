@@ -23,8 +23,11 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
   const editRef = useRef<HTMLDivElement>(null)
 
   const isTextPreview = layer.id.includes('_textpreview_')
+  const isTxtLayer = layer.id.includes('_txt_')
   const currentText = isTextPreview && layer.name.startsWith('textval:')
-    ? layer.name.slice('textval:'.length) : ''
+    ? layer.name.slice('textval:'.length)
+    : isTxtLayer && layer.name.startsWith('text:')
+    ? layer.name.slice(5) : ''
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (inlineEditing) return
@@ -39,7 +42,7 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
   }
 
   const onDoubleClick = (e: React.MouseEvent) => {
-    if (!isTextPreview) return
+    if (!isTextPreview && !isTxtLayer) return
     e.stopPropagation()
     setInlineEditing(true)
     setTimeout(() => {
@@ -60,7 +63,6 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
     const newText = editRef.current.innerText.trim()
     setInlineEditing(false)
     if (newText) {
-      // Dispatch custom event so PropertiesPanel can re-render the text PNG
       window.dispatchEvent(new CustomEvent('canvas-text-edit', {
         detail: { layerId: layer.id, newText }
       }))
@@ -121,11 +123,12 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitInlineEdit() } if (e.key === 'Escape') setInlineEditing(false) }}
           style={{
             width: '100%', height: '100%',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            lineHeight: `${layer.bbox.height}px`,
             fontSize: layer.bbox.height, fontWeight: 'bold',
-            color: 'inherit', outline: '2px dashed #4f8ef7',
+            color: 'white', outline: '2px dashed #4f8ef7',
             background: 'rgba(0,0,0,0.15)', userSelect: 'text',
             cursor: 'text', whiteSpace: 'nowrap', overflow: 'hidden',
+            textAlign: 'center',
           }}
         />
       )}
@@ -302,6 +305,7 @@ export const Canvas: React.FC = () => {
 
         {/* Live text overlays (no API, pure CSS preview) */}
         {Object.entries(textOverlays).map(([key, ov]) => {
+          if (!ov) return null
           const [x1, y1, x2, y2] = ov.bbox
           const w = x2 - x1, h = y2 - y1
           return (
