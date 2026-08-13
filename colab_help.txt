@@ -1,3 +1,7 @@
+
+!sudo apt-get update -y
+!sudo apt-get install python3.11 python3.11-venv -y   
+
 -------------------------------------------------
 to run ngrok
 from pyngrok import ngrok 
@@ -22,5 +26,9 @@ connect to drive
 %cd to path and run
 !ls
 !python main.py
+
+!apt-get update -qq
+!apt-get install -y python3.11 python3.11-venv
+
 
 
