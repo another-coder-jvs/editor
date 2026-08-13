@@ -197,9 +197,11 @@ def render_text_patch(region: dict, new_text: str, overrides: dict | None = None
     bbox = region["bbox"]
     x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
     w, h = max(1, x2 - x1), max(1, y2 - y1)
-    color = ov.get("color", region.get("color", [255, 255, 255]))
+    raw_color = ov.get("color", region.get("color", [255, 255, 255])) or [255, 255, 255]
+    color = [int(c) if c is not None else 255 for c in raw_color]
     font_size_override = ov.get("font_size")
-    shadow_color = ov.get("shadow_color")       # e.g. [0,0,0] or None
+    raw_shadow = ov.get("shadow_color")
+    shadow_color = [int(c) if c is not None else 0 for c in raw_shadow] if raw_shadow else None
     shadow_offset = ov.get("shadow_offset", [2, 2])
     rotation = ov.get("rotation", 0)
 
