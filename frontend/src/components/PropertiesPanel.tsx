@@ -140,13 +140,13 @@ export const PropertiesPanel: React.FC = () => {
   }
 
   const _callRenderText = async (r: TextRegion, newText: string, style?: TextStyle): Promise<string> => {
-    const overrides = style ? {
-      color: hexToRgb(style.color),
-      font_size: style.font_size,
-      shadow_color: style.shadow ? hexToRgb(style.shadow_color) : null,
-      shadow_offset: style.shadow_offset,
-      rotation: style.rotation,
-    } : null
+    const overrides = {
+      color: r.color,
+      font_size: style?.font_size ?? r.font_size,
+      shadow_color: style?.shadow ? hexToRgb(style.shadow_color) : null,
+      shadow_offset: style?.shadow_offset ?? [2, 2],
+      rotation: style?.rotation ?? 0,
+    }
     const res = await fetch(`${baseUrl}/text/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
@@ -222,10 +222,10 @@ export const PropertiesPanel: React.FC = () => {
       }
       clearTextOverlays(selectedLayer.id)
       toast.success('Text applied!')
-      setTextRegions([])
       setTextEdits({})
       setTextStyles({})
-      delete originalLayerPngByLayer.current[selectedLayer.id]
+      // update the "original" reference so next edit erases from the new result
+      originalLayerPngByLayer.current[selectedLayer.id] = bgPath
     } catch (err: any) {
       toast.error('Text edit failed: ' + (err?.message || err))
     } finally { setIsEditing(false) }
