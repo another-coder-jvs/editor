@@ -171,8 +171,20 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
     # --- Unrecognized remainder layer (0% data loss) ---
     remainder_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
-    remainder_pixel_count = int(np.sum(remainder_mask > 128))
-    logger.info(f"[segmentation] remainder pixels: {remainder_pixel_count}")
+
+    # Remove tiny disconnected blobs (shadow noise, compression artifacts)
+    # Keep only connected components larger than 0.5% of total image area
+    min_area = int(img_h * img_w * 0.005)
+    num_labels, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
+        (remainder_mask > 128).astype(np.uint8), connectivity=8
+    )
+    clean_remainder = np.zeros_like(remainder_mask)
+    for cc_idx in range(1, num_labels):  # skip background (0)
+        if stats[cc_idx, cv2.CC_STAT_AREA] >= min_area:
+            clean_remainder[cc_labels == cc_idx] = 255
+
+    remainder_pixel_count = int(np.sum(clean_remainder > 0))
+    logger.info(f"[segmentation] remainder pixels after noise removal: {remainder_pixel_count}")
 
     if remainder_pixel_count > 0:
         layer_id   = f"{session_id}_remainder_{uuid.uuid4().hex[:6]}"
@@ -181,11 +193,10 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         mask_file  = session_dir / mask_name
         png_file   = session_dir / png_name
 
-        Image.fromarray(remainder_mask).save(str(mask_file))
+        Image.fromarray(clean_remainder).save(str(mask_file))
 
-        # Save full-canvas RGBA with remainder pixels visible, recognized pixels transparent
         rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
-        rgba[:, :, 3] = remainder_mask
+        rgba[:, :, 3] = clean_remainder
         Image.fromarray(rgba).save(str(png_file), optimize=False)
 
         full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}

@@ -14,9 +14,17 @@ from services.model_manager import model_manager, DEVICE
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = (
-    "person . car . road . sky . mountain . tree . building . animal . "
-    "water . grass . floor . wall . window . door . furniture . food . "
-    "vehicle . sign . light . shadow . background"
+    "person . face . hand . "
+    "car . truck . bus . motorcycle . bicycle . boat . airplane . "
+    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+    "tree . flower . plant . "
+    "building . house . bridge . tower . "
+    "chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
+    "bottle . cup . bowl . plate . fork . knife . spoon . "
+    "book . laptop . phone . keyboard . monitor . television . "
+    "bag . backpack . suitcase . umbrella . hat . shoe . "
+    "door . window . stairs . fence . "
+    "fire hydrant . traffic light . stop sign . bench . clock"
 )
 
 
