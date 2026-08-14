@@ -28,9 +28,8 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 def refine_mask(mask: np.ndarray) -> np.ndarray:
     logger.debug("[segmentation] refining mask…")
     mask = mask.astype(np.uint8) * 255
-    # Small kernel — preserves fine details like hair and fingers
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    # Close small holes only
+    # Close small holes
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
     # Flood-fill interior holes
     flood = mask.copy()
@@ -38,21 +37,42 @@ def refine_mask(mask: np.ndarray) -> np.ndarray:
     flood_fill_mask = np.zeros((h + 2, w + 2), np.uint8)
     cv2.floodFill(flood, flood_fill_mask, (0, 0), 255)
     mask = mask | cv2.bitwise_not(flood)
-    # Light open to remove isolated noise — skip aggressive erosion
+    # Remove isolated noise
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    # Use bilateral filter instead of Gaussian — preserves edges while smoothing
-    mask_f = mask.astype(np.float32)
-    mask_f = cv2.bilateralFilter(mask_f, d=5, sigmaColor=25, sigmaSpace=5)
-    mask = mask_f.astype(np.uint8)
+
+    # --- Edge feathering via alpha matting ---
+    # Erode to get definite foreground, dilate to get definite background boundary
+    fg_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    eroded  = cv2.erode(mask,  fg_kernel, iterations=2)   # certain foreground
+    dilated = cv2.dilate(mask, fg_kernel, iterations=2)   # certain background boundary
+
+    # Transition zone = pixels between eroded and dilated
+    transition = (dilated > 128) & (eroded < 128)
+
+    # In the transition zone, use distance-based smooth alpha
+    dist_fg = cv2.distanceTransform((mask > 128).astype(np.uint8), cv2.DIST_L2, 5)
+    dist_bg = cv2.distanceTransform((mask < 128).astype(np.uint8), cv2.DIST_L2, 5)
+    smooth = dist_fg / (dist_fg + dist_bg + 1e-6)  # 0..1 gradient across edge
+
+    result = mask.copy().astype(np.float32)
+    result[transition] = smooth[transition] * 255.0
+
+    # Final light blur only on the transition band to remove staircase artifacts
+    blurred = cv2.GaussianBlur(result, (3, 3), 0)
+    result[transition] = blurred[transition]
+
     logger.debug("[segmentation] mask refined")
-    return mask
+    return np.clip(result, 0, 255).astype(np.uint8)
 
 
 def mask_to_transparent_png(image: np.ndarray, mask: np.ndarray, bbox: Dict[str, float], out_path: Path) -> None:
-    x, y, w, h = int(bbox["x"]), int(bbox["y"]), int(bbox["width"]), int(bbox["height"])
     img_h, img_w = image.shape[:2]
-    x1, y1 = max(0, x), max(0, y)
-    x2, y2 = min(img_w, x + w), min(img_h, y + h)
+    # Expand crop by feather radius so soft edge pixels aren't clipped
+    FEATHER_PAD = 8
+    x1 = max(0, int(bbox["x"]) - FEATHER_PAD)
+    y1 = max(0, int(bbox["y"]) - FEATHER_PAD)
+    x2 = min(img_w, int(bbox["x"]) + int(bbox["width"])  + FEATHER_PAD)
+    y2 = min(img_h, int(bbox["y"]) + int(bbox["height"]) + FEATHER_PAD)
     crop_rgb  = image[y1:y2, x1:x2]
     crop_mask = mask[y1:y2, x1:x2]
     rgba = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2RGBA)
@@ -156,12 +176,21 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         mask_url = f"/temp/{session_id}/{mask_name}"
         png_url  = f"/temp/{session_id}/{png_name}"
 
+        # Bbox must match the expanded crop used in mask_to_transparent_png (FEATHER_PAD=8)
+        FP = 8
+        expanded_bbox = {
+            "x":      float(max(0,      int(bbox["x"]) - FP)),
+            "y":      float(max(0,      int(bbox["y"]) - FP)),
+            "width":  float(min(img_w,  int(bbox["x"]) + int(bbox["width"])  + FP) - max(0, int(bbox["x"]) - FP)),
+            "height": float(min(img_h,  int(bbox["y"]) + int(bbox["height"]) + FP) - max(0, int(bbox["y"]) - FP)),
+        }
+
         layers.append(LayerData(
             id=layer_id,
             name=label,
             mask_path=mask_url,
             png_path=png_url,
-            bbox=BoundingBox(**bbox),
+            bbox=BoundingBox(**expanded_bbox),
             z_index=len(objects) - idx,
             visible=True,
             opacity=1.0,
