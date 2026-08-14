@@ -21,8 +21,8 @@ async def edit(req: EditRequest):
     # logger.info(f"FILE : : {BASE_DIR} ")
     session_dir = TEMP_DIR / req.session_id
 
-    layer_png = next(session_dir.glob(f"{req.layer_id}_layer*.png"), None)
-    mask_png  = next(session_dir.glob(f"{req.layer_id}_mask*.png"),  None)
+    layer_png = next(session_dir.glob(f"{req.layer_id}_*layer*.png"), None)
+    mask_png  = next(session_dir.glob(f"{req.layer_id}_*mask*.png"),  None)
     logger.debug(f"[edit] layer_png={layer_png} mask_png={mask_png}")
 
     if not layer_png or not layer_png.exists():
