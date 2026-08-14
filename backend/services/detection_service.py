@@ -26,7 +26,7 @@ DEFAULT_PROMPT = (
     "sign . sign with shadow . poster . poster with shadow . "
     "fire hydrant . hydrant with shadow . traffic light . light with shadow . bench . bench with shadow . trash can . can with shadow . "
     "clock . clock with shadow . mirror . mirror with shadow . painting . painting with shadow . vase . vase with shadow . "
-    "ball . ball with shadow . helmet . helmet with shadow . food . food with shadow . "
+    "ball . ball with shadow . helmet . helmet with shadow . food . food with shadow . mobile"
 )
 
 def _iou(a: List[float], b: List[float]) -> float:
