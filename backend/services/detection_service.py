@@ -14,17 +14,21 @@ from services.model_manager import model_manager, DEVICE
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = (
-    "person . face . hand . "
-    "car . truck . bus . motorcycle . bicycle . boat . airplane . "
-    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
-    "tree . flower . plant . "
-    "building . house . bridge . tower . "
-    "chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
-    "bottle . cup . bowl . plate . fork . knife . spoon . "
-    "book . laptop . phone . keyboard . monitor . television . "
-    "bag . backpack . suitcase . umbrella . hat . shoe . "
-    "door . window . stairs . fence . "
-    "fire hydrant . traffic light . stop sign . bench . clock"
+    "person . face . hand . body . "
+    "car . truck . bus . van . motorcycle . bicycle . scooter . boat . airplane . train . "
+    "dog . cat . bird . horse . cow . sheep . elephant . bear . lion . tiger . "
+    "tree . flower . plant . bush . "
+    "building . house . skyscraper . bridge . tower . wall . fence . pillar . "
+    "chair . table . sofa . couch . bed . desk . cabinet . shelf . drawer . lamp . "
+    "bottle . cup . mug . bowl . plate . fork . knife . spoon . glass . "
+    "book . laptop . phone . keyboard . monitor . television . remote . camera . "
+    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . watch . "
+    "door . window . stairs . escalator . elevator . "
+    "sign . signboard . billboard . banner . poster . label . text . "
+    "fire hydrant . traffic light . stop sign . street light . bench . trash can . "
+    "clock . mirror . painting . picture frame . vase . sculpture . "
+    "ball . toy . helmet . "
+    "food . pizza . burger . sandwich . cake . fruit . vegetable"
 )
 
 
