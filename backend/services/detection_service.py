@@ -14,22 +14,48 @@ from services.model_manager import model_manager, DEVICE
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = (
-    "person . face . hand . body . "
-    "car . truck . bus . van . motorcycle . bicycle . scooter . boat . airplane . train . "
-    "dog . cat . bird . horse . cow . sheep . elephant . bear . lion . tiger . "
-    "tree . flower . plant . bush . "
-    "building . house . skyscraper . bridge . tower . wall . fence . pillar . "
-    "chair . table . sofa . couch . bed . desk . cabinet . shelf . drawer . lamp . "
-    "bottle . cup . mug . bowl . plate . fork . knife . spoon . glass . "
-    "book . laptop . phone . keyboard . monitor . television . remote . camera . "
-    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . watch . "
-    "door . window . stairs . escalator . elevator . "
-    "sign . signboard . billboard . banner . poster . label . text . "
-    "fire hydrant . traffic light . stop sign . street light . bench . trash can . "
-    "clock . mirror . painting . picture frame . vase . sculpture . "
-    "ball . toy . helmet . "
-    "food . pizza . burger . sandwich . cake . fruit . vegetable"
+    "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
+    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+    "tree . flower . plant . "
+    "building . house . bridge . tower . fence . "
+    "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
+    "bottle . cup . bowl . plate . fork . knife . spoon . "
+    "book . laptop . phone . keyboard . monitor . television . camera . "
+    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
+    "door . window . stairs . "
+    "sign . poster . "
+    "fire hydrant . traffic light . bench . trash can . "
+    "clock . mirror . painting . vase . "
+    "ball . helmet . food"
 )
+
+
+def _iou(a: List[float], b: List[float]) -> float:
+    """IoU between two [x1,y1,x2,y2] boxes."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter)
+
+
+def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
+    """Remove duplicate detections — keep highest-score box when IoU > threshold."""
+    # Sort by score descending
+    objects = sorted(objects, key=lambda o: o["score"], reverse=True)
+    kept = []
+    for obj in objects:
+        b = obj["bbox"]
+        box = [b["x"], b["y"], b["x"] + b["width"], b["y"] + b["height"]]
+        if all(_iou(box, [k["bbox"]["x"], k["bbox"]["y"],
+                          k["bbox"]["x"] + k["bbox"]["width"],
+                          k["bbox"]["y"] + k["bbox"]["height"]]) < iou_threshold
+               for k in kept):
+            kept.append(obj)
+    return kept
 
 
 def detect_objects(
@@ -82,27 +108,28 @@ def detect_objects(
     logger.info(f"[detection] raw detections: {len(results['scores'])}")
 
     objects: List[Dict[str, Any]] = []
-    seen_labels: Dict[str, int] = {}
 
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
         x1, y1, x2, y2 = box.tolist()
-        label_str = label.strip()
-        count = seen_labels.get(label_str, 0)
-        seen_labels[label_str] = count + 1
-        display_name = label_str if count == 0 else f"{label_str} {count + 1}"
-
-        obj = {
-            "label": display_name,
+        objects.append({
+            "label": label.strip(),
             "score": round(float(score), 4),
             "bbox": {
-                "x": round(x1, 2),
-                "y": round(y1, 2),
-                "width": round(x2 - x1, 2),
-                "height": round(y2 - y1, 2),
+                "x": round(x1, 2), "y": round(y1, 2),
+                "width": round(x2 - x1, 2), "height": round(y2 - y1, 2),
             },
-        }
-        objects.append(obj)
-        logger.debug(f"[detection]   {display_name} score={obj['score']} bbox={obj['bbox']}")
+        })
+
+    # Deduplicate overlapping boxes across all labels (IoU-based NMS)
+    objects = _nms(objects, iou_threshold=0.5)
+
+    # Assign display names after dedup (same label appearing multiple times = distinct objects)
+    seen: Dict[str, int] = {}
+    for obj in objects:
+        lbl = obj["label"]
+        seen[lbl] = seen.get(lbl, 0) + 1
+        obj["label"] = lbl if seen[lbl] == 1 else f"{lbl} {seen[lbl]}"
+        logger.debug(f"[detection]   {obj['label']} score={obj['score']} bbox={obj['bbox']}")
 
     logger.info(f"[detection] final objects ({len(objects)}): {[o['label'] for o in objects]}")
     return objects
