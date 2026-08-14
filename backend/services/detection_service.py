@@ -14,21 +14,20 @@ from services.model_manager import model_manager, DEVICE
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = (
-    "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
-    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
-    "tree . flower . plant . "
-    "building . house . bridge . tower . fence . "
-    "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
-    "bottle . cup . bowl . plate . fork . knife . spoon . "
-    "book . laptop . phone . keyboard . monitor . television . camera . "
-    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
-    "door . window . stairs . "
-    "sign . poster . "
-    "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase . "
-    "ball . helmet . food"
+    "person . person with shadow . car . car with shadow . truck . truck with shadow . bus . bus with shadow . motorcycle . motorcycle with shadow . bicycle . bicycle with shadow . boat . boat with shadow . airplane . airplane with shadow . train . train with shadow . "
+    "dog . dog with shadow . cat . cat with shadow . bird . bird with shadow . horse . horse with shadow . cow . cow with shadow . sheep . sheep with shadow . elephant . elephant with shadow . bear . bear with shadow . "
+    "tree . tree with shadow . flower . flower with shadow . plant . plant with shadow . "
+    "building . building with shadow . house . house with shadow . bridge . bridge with shadow . tower . tower with shadow . fence . fence with shadow . "
+    "pillow . pillow with shadow . chair . chair with shadow . table . table with shadow . sofa . sofa with shadow . bed . bed with shadow . desk . desk with shadow . cabinet . cabinet with shadow . shelf . shelf with shadow . lamp . lamp with shadow . "
+    "bottle . bottle with shadow . cup . cup with shadow . bowl . bowl with shadow . plate . plate with shadow . fork . fork with shadow . knife . knife with shadow . spoon . spoon with shadow . "
+    "book . book with shadow . laptop . laptop with shadow . phone . phone with shadow . keyboard . keyboard with shadow . monitor . monitor with shadow . television . television with shadow . camera . camera with shadow . "
+    "bag . bag with shadow . backpack . backpack with shadow . suitcase . suitcase with shadow . umbrella . umbrella with shadow . hat . hat with shadow . shoe . shoe with shadow . glasses . glasses with shadow . "
+    "door . door with shadow . window . window with shadow . stairs . stairs with shadow . "
+    "sign . sign with shadow . poster . poster with shadow . "
+    "fire hydrant . hydrant with shadow . traffic light . light with shadow . bench . bench with shadow . trash can . can with shadow . "
+    "clock . clock with shadow . mirror . mirror with shadow . painting . painting with shadow . vase . vase with shadow . "
+    "ball . ball with shadow . helmet . helmet with shadow . food . food with shadow . "
 )
-
 
 def _iou(a: List[float], b: List[float]) -> float:
     """IoU between two [x1,y1,x2,y2] boxes."""
