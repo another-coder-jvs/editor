@@ -146,7 +146,27 @@ export const Canvas: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement>(null)
   const [isPanning, setIsPanning] = useState(false)
+  const [spaceHeld, setSpaceHeld] = useState(false)
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 })
+
+  // Track space key
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && e.target === document.body) {
+        e.preventDefault()
+        setSpaceHeld(true)
+      }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setSpaceHeld(false)
+        setIsPanning(false)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp) }
+  }, [])
 
   // Inline text editor spawned directly on canvas from double-click on original image
   const [inlineEditor, setInlineEditor] = useState<{
@@ -194,9 +214,9 @@ export const Canvas: React.FC = () => {
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
-  // Pan with middle mouse or space+drag
+  // Pan with middle mouse, alt+drag, or space+drag
   const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || e.altKey) {
+    if (e.button === 1 || e.altKey || (spaceHeld && e.button === 0)) {
       setIsPanning(true)
       panStart.current = { x: e.clientX, y: e.clientY, ox: canvasOffset.x, oy: canvasOffset.y }
       e.preventDefault()
@@ -219,7 +239,7 @@ export const Canvas: React.FC = () => {
     <div
       ref={containerRef}
       className="flex-1 overflow-hidden relative"
-      style={{ background: CHECKERBOARD, cursor: isPanning ? 'grabbing' : 'default' }}
+      style={{ background: CHECKERBOARD, cursor: isPanning ? 'grabbing' : spaceHeld ? 'grab' : 'default' }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}

@@ -68,8 +68,6 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     predictor = model_manager.get_sam2()
 
     logger.info(f"[segmentation] opening image: {image_path}")
-    # image_pil = Image.open(image_path).convert("RGB")
-    # image_np  = np.array(image_pil)
     image_path = str(image_path).lstrip("/temp")
 
     # Build path relative to project root
@@ -93,6 +91,13 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     session_dir.mkdir(parents=True, exist_ok=True)
 
     layers: List[LayerData] = []
+    # Accumulate all refined masks to compute the unrecognized remainder
+    img_h, img_w = image_np.shape[:2]
+    combined_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+    # Sanitize label for use in filename
+    def safe_label(lbl: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in lbl.strip())
 
     for idx, obj in enumerate(objects):
         bbox  = obj["bbox"]
@@ -102,7 +107,6 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         box = np.array([bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]])
 
         # Pad the box slightly so SAM2 has context around the object
-        img_h, img_w = image_np.shape[:2]
         pad = max(10, int(min(bbox["width"], bbox["height"]) * 0.05))
         padded_box = np.array([
             max(0, box[0] - pad), max(0, box[1] - pad),
@@ -132,24 +136,23 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
             raw_mask = _bbox_mask(image_np.shape[:2], bbox)
         refined = refine_mask(raw_mask)
 
-        # generate ONCE
+        # Accumulate into combined mask (any pixel > 128 is "recognized")
+        combined_mask = np.maximum(combined_mask, (refined > 128).astype(np.uint8) * 255)
+
         layer_id = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
+        label_slug = safe_label(label)
 
-        # filenames
-        mask_name = f"{layer_id}_mask.png"
-        png_name  = f"{layer_id}_layer.png"
+        mask_name = f"{layer_id}_{label_slug}_mask.png"
+        png_name  = f"{layer_id}_{label_slug}_layer.png"
 
-        # absolute filesystem paths (save here)
         mask_file = session_dir / mask_name
         png_file  = session_dir / png_name
 
-        # save files
         Image.fromarray(refined).save(str(mask_file))
         logger.debug(f"[segmentation] mask saved → {mask_file}")
 
         mask_to_transparent_png(image_np, refined, bbox, png_file)
 
-        # public URLs (return these)
         mask_url = f"/temp/{session_id}/{mask_name}"
         png_url  = f"/temp/{session_id}/{png_name}"
 
@@ -165,37 +168,38 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         ))
 
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
-        # refined   = refine_mask(raw_mask)
-        # layer_id  = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
-        # mask_path = session_dir / f"{layer_id}_mask.png"
-        # png_path  = session_dir / f"{layer_id}_layer.png"
 
-        # Image.fromarray(refined).save(str(mask_path))
-        # logger.debug(f"[segmentation] mask saved → {mask_path}")
+    # --- Unrecognized remainder layer (0% data loss) ---
+    remainder_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
+    remainder_pixel_count = int(np.sum(remainder_mask > 128))
+    logger.info(f"[segmentation] remainder pixels: {remainder_pixel_count}")
 
-        # mask_to_transparent_png(image_np, refined, bbox, png_path)
-        # refined  = refine_mask(raw_mask)
-        # layer_id = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
+    if remainder_pixel_count > 0:
+        layer_id   = f"{session_id}_remainder_{uuid.uuid4().hex[:6]}"
+        mask_name  = f"{layer_id}_unrecognized_mask.png"
+        png_name   = f"{layer_id}_unrecognized_layer.png"
+        mask_file  = session_dir / mask_name
+        png_file   = session_dir / png_name
 
-        # # filenames
-        # mask_name = f"{layer_id}_mask.png"
-        # png_name  = f"{layer_id}_layer.png"
+        Image.fromarray(remainder_mask).save(str(mask_file))
 
-        # # absolute filesystem paths (for saving files)
-        # mask_file = session_dir / mask_name
-        # png_file  = session_dir / png_name
+        # Save full-canvas RGBA with remainder pixels visible, recognized pixels transparent
+        rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
+        rgba[:, :, 3] = remainder_mask
+        Image.fromarray(rgba).save(str(png_file), optimize=False)
 
-        # # public URLs (for frontend response)
-        # mask_path = f"/temp/{session_id}/{mask_name}"
-        # png_path  = f"/temp/{session_id}/{png_name}"
-        # layers.append(LayerData(
-        #     id=layer_id, name=label,
-        #     mask_path=str(mask_path), png_path=str(png_path),
-        #     bbox=BoundingBox(**bbox),
-        #     z_index=len(objects) - idx,
-        #     visible=True, opacity=1.0,
-        # ))
-        logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
+        full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
+        layers.append(LayerData(
+            id=layer_id,
+            name="unrecognized",
+            mask_path=f"/temp/{session_id}/{mask_name}",
+            png_path=f"/temp/{session_id}/{png_name}",
+            bbox=BoundingBox(**full_bbox),
+            z_index=0,  # bottom layer
+            visible=True,
+            opacity=1.0,
+        ))
+        logger.info(f"[segmentation] unrecognized remainder layer created")
 
     # Save session metadata for cache restore
     meta = {
