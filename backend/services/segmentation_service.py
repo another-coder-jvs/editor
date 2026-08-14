@@ -28,15 +28,22 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 def refine_mask(mask: np.ndarray) -> np.ndarray:
     logger.debug("[segmentation] refining mask…")
     mask = mask.astype(np.uint8) * 255
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # Small kernel — preserves fine details like hair and fingers
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    # Close small holes only
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    # Flood-fill interior holes
     flood = mask.copy()
     h, w = flood.shape
     flood_fill_mask = np.zeros((h + 2, w + 2), np.uint8)
     cv2.floodFill(flood, flood_fill_mask, (0, 0), 255)
     mask = mask | cv2.bitwise_not(flood)
+    # Light open to remove isolated noise — skip aggressive erosion
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask = cv2.GaussianBlur(mask, (5, 5), 0)
+    # Use bilateral filter instead of Gaussian — preserves edges while smoothing
+    mask_f = mask.astype(np.float32)
+    mask_f = cv2.bilateralFilter(mask_f, d=5, sigmaColor=25, sigmaSpace=5)
+    mask = mask_f.astype(np.uint8)
     logger.debug("[segmentation] mask refined")
     return mask
 
@@ -50,7 +57,7 @@ def mask_to_transparent_png(image: np.ndarray, mask: np.ndarray, bbox: Dict[str,
     crop_mask = mask[y1:y2, x1:x2]
     rgba = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2RGBA)
     rgba[:, :, 3] = crop_mask
-    Image.fromarray(rgba).save(str(out_path))
+    Image.fromarray(rgba).save(str(out_path), optimize=False)
     logger.debug(f"[segmentation] saved transparent PNG → {out_path}")
 
 
@@ -93,10 +100,30 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         logger.info(f"[segmentation] [{idx+1}/{len(objects)}] '{label}' bbox={bbox}")
 
         box = np.array([bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]])
-        logger.debug(f"[segmentation] SAM2 box prompt: {box}")
+
+        # Pad the box slightly so SAM2 has context around the object
+        img_h, img_w = image_np.shape[:2]
+        pad = max(10, int(min(bbox["width"], bbox["height"]) * 0.05))
+        padded_box = np.array([
+            max(0, box[0] - pad), max(0, box[1] - pad),
+            min(img_w, box[2] + pad), min(img_h, box[3] + pad),
+        ])
+
+        # Center point prompt — guides SAM2 toward the object interior
+        cx = (padded_box[0] + padded_box[2]) / 2
+        cy = (padded_box[1] + padded_box[3]) / 2
+        point_coords = np.array([[cx, cy]])
+        point_labels = np.array([1])  # 1 = foreground
+
+        logger.debug(f"[segmentation] SAM2 box prompt: {padded_box}")
 
         try:
-            masks, scores, _ = predictor.predict(box=box, multimask_output=True)
+            masks, scores, _ = predictor.predict(
+                box=padded_box,
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=True,
+            )
             best_idx  = int(np.argmax(scores))
             raw_mask  = masks[best_idx]
             logger.info(f"[segmentation] '{label}' → best mask score={scores[best_idx]:.4f} (of {len(scores)})")
