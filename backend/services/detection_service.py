@@ -25,7 +25,7 @@ DEFAULT_PROMPT = (
     "door . window . stairs . "
     "sign . poster . "
     "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase . wall . "
+    "clock . mirror . painting . vase ."
     "ball . helmet . food . mobile phone . stone"
 )
 
