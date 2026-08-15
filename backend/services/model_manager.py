@@ -176,6 +176,8 @@ class ModelManager:
         if self._inpaint_pipe is None:
             logger.info("[model_manager] Loading inpainting pipeline…")
             try:
+                if os.environ.get("USE_SDXL"):
+                    raise RuntimeError("USE_SDXL env var set, skipping FLUX")
                 self._inpaint_pipe = self._load_flux_kontext()
             except Exception as e:
                 logger.warning(f"[model_manager] FLUX unavailable ({e}), using SDXL inpaint")
