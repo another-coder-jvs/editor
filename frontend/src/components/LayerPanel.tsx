@@ -71,7 +71,7 @@ const LayerItem: React.FC<LayerItemProps> = ({
 
   return (
     <div
-      className={`layer-item ${selected ? 'selected' : ''}`}
+      className={`layer-item group ${selected ? 'selected' : ''}`}
       onClick={onSelect}
     >
       {/* Thumbnail */}
