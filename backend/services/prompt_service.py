@@ -16,6 +16,7 @@ SYSTEM_PROMPT = """You are an image editing assistant. Extract the edit intent f
 
 Rules:
 - If the instruction asks to change/recolor/make a color (e.g. "make blue", "change color to red", "recolor jacket navy") → edit_type = "recolor", edit_params = {"color": "<color>"}
+- For recolor, always normalize the color value to the closest standard English color word (e.g. "chocolaty" → "brown", "navy" → "blue", "scarlet" → "red", "crimson" → "red")
 - NEVER use style_transfer or other for simple color changes
 - edit_type must be one of: recolor, replace, blur, sharpen, brightness, contrast, saturation, background_remove, generative_fill, erase, upscale, cartoon, anime, oil_painting, sketch, pixel_art, style_transfer, text_edit, other
 - If the instruction asks to change/edit/replace text content or text color → edit_type = "text_edit", edit_params = {"new_text": "<new text>", "color": "<color if specified>", "target_text": "<original text if specified>"}

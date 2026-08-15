@@ -133,8 +133,29 @@ def _recolor(img: Image.Image, original_image_path: str, mask_path: str,
         "blue": 110, "purple": 130, "magenta": 150, "pink": 165,
         "white": None, "black": None, "gray": None, "grey": None,
         "brown": 10, "beige": 20, "gold": 25, "silver": None,
+        "chocolaty": 10, "chocolate": 10, "maroon": 0, "olive": 40,
+        "teal": 90, "navy": 115, "indigo": 125, "violet": 135,
+        "coral": 5, "salmon": 3, "khaki": 25, "tan": 18, "cream": 22,
+        "turquoise": 88, "lime": 55, "mint": 75, "lavender": 135,
     }
+    # Fuzzy fallback: find closest key by substring or difflib
     target_hue = COLOR_HUE.get(color_name.lower())
+    if target_hue is None and color_name.lower() not in COLOR_HUE:
+        import difflib
+        match = difflib.get_close_matches(color_name.lower(), COLOR_HUE.keys(), n=1, cutoff=0.5)
+        if match:
+            target_hue = COLOR_HUE[match[0]]
+            logger.info(f"[editing/recolor] fuzzy matched '{color_name}' → '{match[0]}' hue={target_hue}")
+        else:
+            # Try PIL color parse as last resort
+            try:
+                from PIL import ImageColor
+                r, g, b = ImageColor.getrgb(color_name)
+                hsv_c = cv2.cvtColor(np.array([[[r, g, b]]], dtype=np.uint8), cv2.COLOR_RGB2HSV)
+                target_hue = int(hsv_c[0, 0, 0])
+                logger.info(f"[editing/recolor] PIL parsed '{color_name}' → hue={target_hue}")
+            except Exception:
+                logger.warning(f"[editing/recolor] unknown color '{color_name}', defaulting to hue=10 (brown)")
 
     orig_alpha = img.getchannel("A")
     rgb = np.array(img.convert("RGB"))
