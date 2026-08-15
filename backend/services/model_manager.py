@@ -20,6 +20,16 @@ WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE  = torch.float16 if DEVICE == "cuda" else torch.float32
 
+
+def _from_pretrained_with_fallback(cls, repo_id: str, **kwargs):
+    """Try loading from HF (online), fall back to local cache if auth/network fails."""
+    try:
+        logger.info(f"[model_manager] Loading {repo_id} from HF (online)…")
+        return cls.from_pretrained(repo_id, **kwargs)
+    except Exception as e:
+        logger.warning(f"[model_manager] Online load failed ({e}), retrying local cache…")
+        return cls.from_pretrained(repo_id, local_files_only=True, **kwargs)
+
 logger.info(f"[model_manager] device={DEVICE} dtype={DTYPE}")
 logger.info(f"[model_manager] weights dir={WEIGHTS_DIR}")
 if DEVICE == "cuda":
@@ -159,7 +169,8 @@ class ModelManager:
         return pipe
     def _load_sdxl_img2img(self):
         logger.info("[model_manager] Loading SDXL img2img...")
-        pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+        pipe = _from_pretrained_with_fallback(
+            StableDiffusionXLImg2ImgPipeline,
             "stabilityai/stable-diffusion-xl-base-1.0",
             torch_dtype=torch.float32 if DEVICE == "cpu" else DTYPE,
             low_cpu_mem_usage=True,
@@ -187,7 +198,8 @@ class ModelManager:
     def _load_flux_kontext(self):
         from diffusers import FluxInpaintPipeline
         logger.info("[model_manager] Loading FLUX.1-dev inpaint…")
-        pipe = FluxInpaintPipeline.from_pretrained(
+        pipe = _from_pretrained_with_fallback(
+            FluxInpaintPipeline,
             "black-forest-labs/FLUX.1-dev",
             torch_dtype=DTYPE,
             cache_dir=str(WEIGHTS_DIR / "flux"),
@@ -200,7 +212,8 @@ class ModelManager:
     def _load_sdxl_inpaint(self):
         from diffusers import StableDiffusionXLInpaintPipeline
         logger.info("[model_manager] Loading SDXL inpaint…")
-        pipe = StableDiffusionXLInpaintPipeline.from_pretrained(
+        pipe = _from_pretrained_with_fallback(
+            StableDiffusionXLInpaintPipeline,
             "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
             torch_dtype=torch.float32 if DEVICE == "cpu" else DTYPE,
             low_cpu_mem_usage=True,
