@@ -22,12 +22,24 @@ DTYPE  = torch.float16 if DEVICE == "cuda" else torch.float32
 
 
 def _from_pretrained_with_fallback(cls, repo_id: str, **kwargs):
-    """Try loading from HF (online), fall back to local cache if auth/network fails."""
+    """Try loading from HF (online), fall back to local snapshot folder if auth/network fails."""
     try:
         logger.info(f"[model_manager] Loading {repo_id} from HF (online)…")
         return cls.from_pretrained(repo_id, **kwargs)
     except Exception as e:
         logger.warning(f"[model_manager] Online load failed ({e}), retrying local cache…")
+        # Try direct snapshot folder to bypass incomplete-snapshot check
+        cache_dir = kwargs.get("cache_dir")
+        if cache_dir:
+            from pathlib import Path
+            snapshots_dir = Path(cache_dir)
+            # Find snapshot folders: cache_dir/models--*/snapshots/*/
+            candidates = sorted(snapshots_dir.glob("models--*/snapshots/*/"), reverse=True)
+            for snap in candidates:
+                if snap.is_dir() and (snap / "unet").exists():
+                    logger.info(f"[model_manager] Loading from local snapshot: {snap}")
+                    kw = {k: v for k, v in kwargs.items() if k != "cache_dir"}
+                    return cls.from_pretrained(str(snap), **kw)
         return cls.from_pretrained(repo_id, local_files_only=True, **kwargs)
 
 logger.info(f"[model_manager] device={DEVICE} dtype={DTYPE}")
