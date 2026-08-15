@@ -15,10 +15,12 @@ interface LayerImageProps {
   selectLayer: (id: string, multi: boolean) => void
   updateLayer: (id: string, patch: any) => void
   canvasScale: number
+  pushHistory: () => void
 }
-const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer, updateLayer, canvasScale }) => {
+const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, selectLayer, updateLayer, canvasScale, pushHistory }) => {
   const thumbUrl = useBlobUrl(rawUrl)
   const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+  const didPushHistory = useRef(false)
   const [inlineEditing, setInlineEditing] = useState(false)
   const editRef = useRef<HTMLDivElement>(null)
 
@@ -73,10 +75,14 @@ const LayerImage: React.FC<LayerImageProps> = ({ layer, rawUrl, isSelected, sele
     if (!dragStart.current) return
     const dx = (e.clientX - dragStart.current.mx) / canvasScale
     const dy = (e.clientY - dragStart.current.my) / canvasScale
+    if (!didPushHistory.current && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+      pushHistory()
+      didPushHistory.current = true
+    }
     updateLayer(layer.id, { position: { x: dragStart.current.px + dx, y: dragStart.current.py + dy } })
-  }, [canvasScale, layer.id, updateLayer])
+  }, [canvasScale, layer.id, updateLayer, pushHistory])
 
-  const onMouseUp = useCallback(() => { dragStart.current = null }, [])
+  const onMouseUp = useCallback(() => { dragStart.current = null; didPushHistory.current = false }, [])
 
   useEffect(() => {
     window.addEventListener('mousemove', onMouseMove)
@@ -141,7 +147,7 @@ export const Canvas: React.FC = () => {
     layers, originalImageUrl, canvasWidth, canvasHeight,
     canvasScale, canvasOffset, setCanvasScale, setCanvasOffset,
     selectedLayerIds, selectLayer, clearSelection, updateLayer,
-    detectedTextRegions, textOverlays,
+    detectedTextRegions, textOverlays, pushHistory,
   } = useEditorStore()
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -320,7 +326,7 @@ export const Canvas: React.FC = () => {
         {sortedLayers.map((layer) => {
           const isSelected = selectedLayerIds.includes(layer.id)
           const rawUrl = layer.png_path ? (layer.png_path.startsWith("blob:") || layer.png_path.startsWith("data:") ? layer.png_path : `${API_BASE}${layer.png_path}`) : null
-          return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} />
+          return <LayerImage key={layer.id} layer={layer} rawUrl={rawUrl} isSelected={isSelected} selectLayer={selectLayer} updateLayer={updateLayer} canvasScale={canvasScale} pushHistory={pushHistory} />
         })}
 
         {/* Live text overlays (no API, pure CSS preview) */}
