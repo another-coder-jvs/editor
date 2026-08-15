@@ -95,14 +95,6 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       textOverlays: Object.fromEntries(Object.entries(s.textOverlays).filter(([k]) => !k.startsWith(layerId + '_')))
     })),
 
-  textOverlays: {},
-  setTextOverlay: (key, overlay) =>
-    set((s) => ({ textOverlays: { ...s.textOverlays, [key]: overlay } })),
-  clearTextOverlays: (layerId) =>
-    set((s) => ({
-      textOverlays: Object.fromEntries(Object.entries(s.textOverlays).filter(([k]) => !k.startsWith(layerId + '_')))
-    })),
-
   setSession: (id, imagePath, imageUrl, w, h) =>
     set({ sessionId: id, originalImagePath: imagePath, originalImageUrl: imageUrl, canvasWidth: w, canvasHeight: h }),
 

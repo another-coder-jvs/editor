@@ -188,7 +188,7 @@ export const PropertiesPanel: React.FC = () => {
       const res = await fetch(`${baseUrl}/text/detect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
-        body: JSON.stringify({ session_id: sessionId, layer_id: selectedLayer.id, image_path: originalImagePath || '' }),
+        body: JSON.stringify({ session_id: sessionId, layer_id: selectedLayer.id, image_path: selectedLayer.png_path || '' }),
       })
       const data = await res.json()
       setTextRegions(data.regions || [])
