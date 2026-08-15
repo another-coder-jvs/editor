@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
-import { editLayer } from '../api/client'
+import { editLayer, reconstructBackground } from '../api/client'
 import { toast } from 'react-toastify'
 import { baseUrl } from '../config'
 import { Type, Pipette } from 'lucide-react'
@@ -25,7 +25,7 @@ interface TextStyle { color: string; font_size: number; shadow: boolean; shadow_
 
 export const PropertiesPanel: React.FC = () => {
   const {
-    layers, selectedLayerIds, updateLayer, addLayer,
+    layers, selectedLayerIds, updateLayer, addLayer, canvasWidth, canvasHeight,
     sessionId, originalImagePath, pushHistory, setProgress,
     setDetectedTextRegions, setTextOverlay, clearTextOverlays,
     textRegionsByLayer, setTextRegionsByLayer: storeSetTextRegionsByLayer,
@@ -355,6 +355,37 @@ export const PropertiesPanel: React.FC = () => {
     }
   }
 
+  const handleReconstructBg = async () => {
+    if (!selectedLayer || !sessionId || !originalImagePath) return
+    if (!selectedLayer.mask_path) { toast.warn('No mask available for this layer'); return }
+    setIsEditing(true)
+    try {
+      const result = await reconstructBackground({
+        session_id: sessionId,
+        layer_id: selectedLayer.id,
+        image_path: originalImagePath,
+        mask_path: selectedLayer.mask_path,
+      })
+      // Add reconstructed bg as a new layer below the current one
+      const bgId = `${selectedLayer.id}_bg_${Date.now()}`
+      addLayer({
+        ...selectedLayer,
+        id: bgId,
+        name: `bg:${selectedLayer.name}`,
+        png_path: result.path,
+        bbox: { x: 0, y: 0, width: canvasWidth, height: canvasHeight },
+        position: { x: 0, y: 0 },
+        z_index: selectedLayer.z_index - 1,
+        history: [],
+        locked: false,
+        mask_path: '',
+      })
+      toast.success('Background reconstructed!')
+    } catch (err: any) {
+      toast.error('Reconstruction failed: ' + (err?.message || err))
+    } finally { setIsEditing(false) }
+  }
+
   return (
     <div className="w-60 bg-dark-800 border-l border-dark-600 flex flex-col overflow-y-auto">
       <div className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-dark-600">
@@ -530,6 +561,10 @@ export const PropertiesPanel: React.FC = () => {
             <button onClick={handleEdit} disabled={isEditing || !prompt.trim()}
               className="w-full mt-2 bg-accent hover:bg-accent-hover text-white text-sm py-2 rounded disabled:opacity-40 transition-colors">
               {isEditing ? 'Editing…' : 'Apply Edit (Ctrl+Enter)'}
+            </button>
+            <button onClick={handleReconstructBg} disabled={isEditing}
+              className="w-full mt-1 bg-dark-600 hover:bg-dark-500 text-gray-300 text-sm py-2 rounded disabled:opacity-40 transition-colors">
+              {isEditing ? 'Reconstructing…' : '🪄 Reconstruct Background'}
             </button>
           </div>
 

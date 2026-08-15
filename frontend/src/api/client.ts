@@ -123,3 +123,13 @@ export async function listProjects(): Promise<{ projects: string[] }> {
 export async function deleteProject(name: string): Promise<void> {
   await api.delete(`/project/${name}`)
 }
+
+export async function reconstructBackground(payload: {
+  session_id: string
+  layer_id: string
+  image_path: string
+  mask_path: string
+}): Promise<{ path: string }> {
+  const { data } = await api.post('/inpaint-bg', payload)
+  return data
+}
