@@ -47,7 +47,7 @@ def edit_layer(
         _available_gb = psutil.virtual_memory().available / 1024**3
         _low_ram = _available_gb < 5.5
 
-    GENERATIVE_TYPES = {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
+    GENERATIVE_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     if edit_type == "style_transfer" and "color" in edit_params:
         edit_type = "recolor"
@@ -67,7 +67,7 @@ def edit_layer(
     out_path = TEMP_DIR / session_id / f"{layer_id}_edited_{out_id}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    AI_TYPES = {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
+    AI_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     handlers = {
         "recolor":           _recolor,
@@ -103,9 +103,11 @@ def edit_layer(
         import gc
         if edit_type == "style_transfer":
             model_manager.unload_img2img_pipe()
-        elif edit_type in {"recolor", "replace", "generative_fill", "anime", "oil_painting", "other"}:
+        elif edit_type in {"replace", "generative_fill", "anime", "oil_painting", "other"}:
             model_manager.unload_inpaint_pipe()
         gc.collect()
+    elif edit_type == "recolor":
+        result = handler(layer_img, original_image_path, mask_path, inpaint_prompt, strength, guidance_scale, steps, edit_params)
     else:
         if edit_type == "text_edit":
             result = handler(layer_img, edit_params, original_image_path)
@@ -123,10 +125,47 @@ def _recolor(img: Image.Image, original_image_path: str, mask_path: str,
              prompt: str, strength: float, guidance_scale: float, steps: int,
              params: Dict[str, Any]) -> Image.Image:
     color_name = params.get("color", "blue") if isinstance(params, dict) else "blue"
-    logger.info(f"[editing/recolor] routing to inpaint pipeline, color={color_name}")
-    inpaint_prompt = prompt or f"{color_name} colored object, photorealistic, same texture and lighting"
-    return _inpaint(img, original_image_path, mask_path, inpaint_prompt,
-                    max(strength, 0.75), guidance_scale, steps, params)
+    logger.info(f"[editing/recolor] HSV recolor → {color_name}")
+
+    # Map color name to target HSV hue (0-179 in OpenCV)
+    COLOR_HUE = {
+        "red": 0, "orange": 10, "yellow": 28, "green": 60, "cyan": 90,
+        "blue": 110, "purple": 130, "magenta": 150, "pink": 165,
+        "white": None, "black": None, "gray": None, "grey": None,
+        "brown": 10, "beige": 20, "gold": 25, "silver": None,
+    }
+    target_hue = COLOR_HUE.get(color_name.lower())
+
+    orig_alpha = img.getchannel("A")
+    rgb = np.array(img.convert("RGB"))
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+    # Only recolor pixels where alpha > 10 (the object)
+    mask = np.array(orig_alpha) > 10
+
+    if target_hue is None:
+        # Desaturate for white/black/gray/silver
+        target_s = 0
+        if color_name.lower() in ("white", "silver"):
+            target_v = 220
+        elif color_name.lower() == "black":
+            target_v = 30
+        else:
+            target_v = hsv[:, :, 2]  # keep original value
+        hsv[:, :, 1] = np.where(mask, target_s, hsv[:, :, 1])
+        if isinstance(target_v, np.ndarray):
+            hsv[:, :, 2] = np.where(mask, target_v, hsv[:, :, 2])
+        else:
+            hsv[:, :, 2] = np.where(mask, target_v, hsv[:, :, 2])
+    else:
+        hsv[:, :, 0] = np.where(mask, target_hue, hsv[:, :, 0])
+        # Boost saturation if too low (e.g. was gray/white)
+        hsv[:, :, 1] = np.where(mask, np.maximum(hsv[:, :, 1], 120), hsv[:, :, 1])
+
+    result_rgb = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+    result = Image.fromarray(result_rgb).convert("RGBA")
+    result.putalpha(orig_alpha)
+    return result
 
 
 def _blur(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
