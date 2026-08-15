@@ -126,7 +126,7 @@ def _recolor(img: Image.Image, original_image_path: str, mask_path: str,
     logger.info(f"[editing/recolor] routing to inpaint pipeline, color={color_name}")
     inpaint_prompt = prompt or f"{color_name} colored object, photorealistic, same texture and lighting"
     return _inpaint(img, original_image_path, mask_path, inpaint_prompt,
-                    strength, guidance_scale, steps, params)
+                    max(strength, 0.75), guidance_scale, steps, params)
 
 
 def _blur(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
@@ -272,7 +272,10 @@ def _inpaint(
     pipe = model_manager.get_inpaint_pipe()
     orig_alpha = layer_img.getchannel("A")
     rgb = layer_img.convert("RGB")
-    mask = Image.fromarray(np.array(orig_alpha))
+    # Mask = where alpha > 0 (the object pixels) → white = inpaint here
+    alpha_arr = np.array(orig_alpha)
+    mask_arr = np.where(alpha_arr > 10, 255, 0).astype(np.uint8)
+    mask = Image.fromarray(mask_arr)
     w, h = rgb.size
     if DEVICE == "cpu":
         scale = min(512 / w, 512 / h, 1.0)
