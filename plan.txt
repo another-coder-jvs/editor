@@ -1,0 +1,35 @@
+# Remaining Plan (updated)
+
+## Bugs still to fix:
+
+1. editorStore.ts addLayer – duplicate key TS2783 (blend_mode/adjustments before ...layer)
+   FIX: put defaults after spread: { ...layer, blend_mode: layer.blend_mode||'normal', adjustments: ... }
+
+2. AIEditPanel.tsx – missing `{/* ── Text Editor ── */}` section wrapper after the layer name div
+   FIX: already done in last edit, verify JSX closes correctly
+
+3. ToolOptionsPanel.tsx – calls useEditorStore.getState() inside render (color_picker branch)
+   FIX: use hook at top level, not inside conditional branch
+
+4. Canvas.tsx – `import { baseImagesUrl } from '@/config'` should be `'../config'`
+   FIX: already done via sed, verify
+
+5. useCanvasDraw.ts – `useEditorStore.getState().setToolOption(...)` called inside effect callback
+   is fine (zustand getState is safe outside React), but import path must be relative
+
+6. TransformPanel.tsx – useState for resizeW/H initialized from layer at mount but won't
+   update when layer changes. FIX: use useEffect to sync on layer change.
+
+7. LayerPanel.tsx – blend mode dropdown may be cut off by overflow-hidden on parent.
+   FIX: add overflow-visible to the layer-item container when selected.
+
+## Files to write/fix in order:
+
+1. editorStore.ts        – fix addLayer duplicate key
+2. ToolOptionsPanel.tsx  – fix useEditorStore hook call in conditional
+3. TransformPanel.tsx    – fix resizeW/H sync with layer changes
+4. Canvas.tsx            – verify @/config import is fixed
+5. useCanvasDraw.ts      – verify import path
+6. AIEditPanel.tsx       – verify JSX structure is valid (run tsc)
+7. Run tsc again and fix any remaining errors
+8. Update plan.txt as DONE

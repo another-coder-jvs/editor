@@ -1,0 +1,132 @@
+# Instructions for Next Session
+# All frontend TypeScript compiles clean (tsc exit 0). Continue from here.
+
+## COMPLETED SO FAR:
+- types/index.ts         – added BlendMode, LayerAdjustments, DEFAULT_ADJUSTMENTS, all new Tool types
+- editorStore.ts         – added blend_mode, adjustments, toolOptions, canvasBg, activePanel, renameLayer, setToolOption, setCanvasBg
+- Toolbar.tsx            – full tool groups (Select/Draw/Shape/Edit) with dropdowns, keyboard shortcut labels
+- Canvas.tsx             – draw/crop/select overlay canvases, CSS filter from adjustments, vignette/grain/fade overlays, blend_mode mixBlendMode
+- hooks/useCanvasDraw.ts – brush/pencil/marker/eraser/clone/shapes all draw on overlay canvas and commit to layer
+- hooks/useCanvasSelect.ts – rect/ellipse/lasso/free selection with marching ants animation
+- hooks/useCanvasCrop.ts – interactive crop with handles, rule-of-thirds grid, Enter to apply
+- LayerPanel.tsx         – inline rename (double-click), blend mode dropdown, opacity mini-slider, Add Layer button
+- AdjustPanel.tsx        – all 14 adjustment sliders (brightness/contrast/saturation/exposure/highlights/shadows/temperature/tint/hue/sharpness/clarity/fade/vignette/grain), non-destructive via CSS filter
+- TransformPanel.tsx     – position XY, rotation, scale XY, resize with aspect lock, flip H/V, rotate 90 CW/CCW
+- ToolOptionsPanel.tsx   – context-sensitive options for every tool (brush/shape/select/crop/color_picker/text/move)
+- PropertiesPanel.tsx    – rewritten as 4-tab router: Tool | Adjust | Transform | AI Edit
+- AIEditPanel.tsx        – extracted from old PropertiesPanel, outer wrapper removed (PropertiesPanel provides container)
+- ExportModal.tsx        – added quality slider for JPEG/WEBP, output size info
+- HistoryPanel.tsx       – added Reset button with confirm dialog
+- useKeyboardShortcuts.ts – V/B/E/C/T/M/L/W/S/I/P/U tool shortcuts added
+- App.tsx                – removed stray `print` statement bug
+- All @/config imports   – fixed to relative ../config in Canvas.tsx, LayerPanel.tsx, hooks
+
+## REMAINING TASKS:
+
+### 1. Backend: prompt_service.py – verify no `params` undefined bug
+   FILE: /mnt/e/editor/backend/services/prompt_service.py
+   CHECK: grep -n "params\." to confirm no undefined `params` variable reference
+   The file looked clean in last read but confirm line ~85 text_edit branch has no params.get()
+
+### 2. Backend: editing_service.py – add missing adjust edit types
+   FILE: /mnt/e/editor/backend/services/editing_service.py
+   ADD these handlers to the `handlers` dict and implement them:
+   - "exposure"     → PIL ImageEnhance.Brightness with exposure curve
+   - "highlights"   → numpy highlight recovery
+   - "shadows"      → numpy shadow lift
+   - "temperature"  → RGB channel shift (warm/cool)
+   - "tint"         → green/magenta channel shift
+   - "hue"          → HSV hue rotation (already have recolor, make a pure hue-rotate)
+   - "clarity"      → local contrast enhancement via unsharp mask
+   - "fade"         → blend with white overlay
+   - "vignette"     → radial gradient darkening
+   - "grain"        → add gaussian noise
+   - "motion_blur"  → cv2 motion blur kernel
+   These allow the AI prompt to route to them AND the Adjust panel can call /edit with edit_type override
+
+### 3. Frontend: Canvas.tsx – text_add tool click handler
+   FILE: /mnt/e/editor/frontend/src/components/Canvas.tsx
+   When activeTool === 'text_add', clicking on canvas should:
+   - Prompt user for text (window.prompt or inline input)
+   - Create a new text layer at click position with default style
+   - Add it via addLayer() with id `text_add_${Date.now()}`, name `text:Hello`
+   - png_path = '' (empty, rendered as CSS text overlay until user applies via AI Edit tab)
+   Implementation: add onClick handler on the canvas div that checks activeTool === 'text_add'
+
+### 4. Frontend: Canvas.tsx – magic_select / object_select tool
+   FILE: /mnt/e/editor/frontend/src/components/Canvas.tsx
+   When activeTool === 'magic_select' or 'object_select', clicking on canvas should:
+   - Call POST /detect with the current layer image
+   - Show detected objects as selection overlays
+   - Currently these tools do nothing on canvas click
+   Implementation: add click handler that calls detectObjects() API and highlights result
+
+### 5. Frontend: AdjustPanel.tsx – wire temperature/tint to actual CSS filter
+   FILE: /mnt/e/editor/frontend/src/components/AdjustPanel.tsx + Canvas.tsx buildFilter()
+   Currently temperature and tint sliders store values but buildFilter() doesn't use them.
+   FIX in Canvas.tsx buildFilter():
+   - temperature > 0 → sepia(x) + saturate(y) approximation for warm
+   - temperature < 0 → hue-rotate(180) approximation for cool
+   - tint → slight hue-rotate offset
+   OR: apply temperature/tint as a canvas 2D color matrix on commit (more accurate)
+
+### 6. Frontend: LayerPanel.tsx – blend mode dropdown z-index clipping
+   FILE: /mnt/e/editor/frontend/src/components/LayerPanel.tsx
+   The blend mode dropdown `absolute bottom-full` may be clipped by the layer list's overflow-y-auto.
+   FIX: wrap the LayerPanel list in `overflow-visible` or render dropdown via a portal.
+   Quick fix: change the dropdown to open downward (`top-full`) instead of upward, and add z-50.
+
+### 7. Frontend: useCanvasDraw.ts – heal tool implementation
+   FILE: /mnt/e/editor/frontend/src/hooks/useCanvasDraw.ts
+   Currently heal tool falls through to brush behavior.
+   FIX: implement simple heal by sampling surrounding pixels and blending:
+   - On mouseup, for each painted pixel, sample a ring of pixels around it
+   - Average the ring colors and paint them over the stroke area
+   - This gives a basic content-aware heal without backend
+
+### 8. Frontend: Canvas.tsx – selection actions (cut/copy/invert)
+   After a selection is made (rect/ellipse/lasso), show a small floating toolbar:
+   - Cut: make selected area transparent on layer
+   - Copy: copy selected area to clipboard / new layer
+   - Invert: invert the selection mask
+   Implementation: listen to `selection` state from useCanvasSelect, show action bar when non-null
+
+### 9. Backend: routers/edit.py – support editing blob/data URLs
+   FILE: /mnt/e/editor/backend/routers/edit.py
+   When layer.png_path is a data: URL (drawn layer), the backend can't find it on disk.
+   FIX: in edit router, detect if layer_png starts with data:, decode base64 and save to temp file first.
+   Also update session_meta.json write to handle data: URLs.
+
+### 10. Frontend: ExportModal.tsx – canvas-side export for drawn layers
+    FILE: /mnt/e/editor/frontend/src/components/ExportModal.tsx
+    When layers have data: URLs (drawn on canvas), the backend /export endpoint can't read them.
+    FIX: before calling exportImage(), for each layer with data: png_path:
+    - POST the base64 data to a new endpoint /session/upload-layer
+    - Get back a server-side path, replace png_path temporarily for the export call
+    OR: do a full client-side canvas composite and download directly without backend.
+    Recommended: add client-side composite fallback using OffscreenCanvas.
+
+### 11. Backend: new endpoint POST /session/upload-layer
+    FILE: /mnt/e/editor/backend/routers/session.py
+    Add endpoint that accepts { session_id, layer_id, data_url } and saves the base64 PNG to temp dir.
+    Returns { path: "/temp/session_id/layer_id_upload.png" }
+    This allows drawn layers to be exported via the normal /export pipeline.
+
+### 12. Frontend: index.css – toolbar-btn flex-row variant
+    FILE: /mnt/e/editor/frontend/src/index.css
+    The Save/Export buttons in Toolbar use `flex-row gap-1` class but toolbar-btn is flex-col.
+    FIX: add `.toolbar-btn.flex-row { flex-direction: row; }` or use a separate class.
+
+## QUICK WINS (do these first in next session):
+1. Fix #12 (index.css) – 2 lines
+2. Fix #1 (prompt_service verify) – read + confirm
+3. Fix #6 (LayerPanel dropdown direction) – 1 line change
+4. Fix #3 (text_add click) – ~20 lines in Canvas.tsx
+5. Fix #5 (temperature/tint in buildFilter) – ~10 lines in Canvas.tsx
+
+## THEN:
+6. Fix #9 (edit.py data: URL support) – ~15 lines
+7. Fix #10+11 (export drawn layers) – new endpoint + client fallback
+8. Fix #7 (heal tool) – ~30 lines in useCanvasDraw.ts
+9. Fix #8 (selection actions toolbar) – ~40 lines in Canvas.tsx
+10. Fix #2 (editing_service new handlers) – ~100 lines in editing_service.py

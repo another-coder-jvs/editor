@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { LayerData, Tool, ProgressInfo } from '../types'
+import { LayerData, Tool, ProgressInfo, DEFAULT_ADJUSTMENTS } from '../types'
 
 interface EditorState {
   // Session
@@ -9,6 +9,7 @@ interface EditorState {
   originalImageUrl: string | null
   canvasWidth: number
   canvasHeight: number
+  canvasBg: string  // css color or 'transparent'
 
   // Layers
   layers: LayerData[]
@@ -16,6 +17,18 @@ interface EditorState {
 
   // Tool
   activeTool: Tool
+  toolOptions: {
+    brushSize: number
+    brushOpacity: number
+    brushColor: string
+    brushHardness: number
+    eraserSize: number
+    shapeStroke: string
+    shapeFill: string
+    shapeStrokeWidth: number
+    shapeOpacity: number
+    selectionFeather: number
+  }
 
   // Progress
   progress: ProgressInfo | null
@@ -43,6 +56,10 @@ interface EditorState {
   setTextOverlay: (key: string, overlay: any) => void
   clearTextOverlays: (layerId: string) => void
 
+  // Active panel in properties
+  activePanel: string
+  setActivePanel: (p: string) => void
+
   // Actions
   setSession: (id: string, imagePath: string, imageUrl: string, w: number, h: number) => void
   setLayers: (layers: LayerData[]) => void
@@ -50,6 +67,7 @@ interface EditorState {
   selectLayer: (id: string, multi?: boolean) => void
   clearSelection: () => void
   setActiveTool: (tool: Tool) => void
+  setToolOption: (key: string, value: any) => void
   setProgress: (p: ProgressInfo | null) => void
   pushHistory: () => void
   undo: () => void
@@ -58,9 +76,24 @@ interface EditorState {
   addLayer: (layer: LayerData) => void
   duplicateLayer: (id: string) => void
   deleteLayer: (id: string) => void
+  renameLayer: (id: string, name: string) => void
   setCanvasScale: (s: number) => void
   setCanvasOffset: (o: { x: number; y: number }) => void
+  setCanvasBg: (bg: string) => void
   reset: () => void
+}
+
+const defaultToolOptions = {
+  brushSize: 20,
+  brushOpacity: 1,
+  brushColor: '#ffffff',
+  brushHardness: 0.8,
+  eraserSize: 20,
+  shapeStroke: '#ffffff',
+  shapeFill: 'transparent',
+  shapeStrokeWidth: 2,
+  shapeOpacity: 1,
+  selectionFeather: 0,
 }
 
 export const useEditorStore = create<EditorState>()(persist((set, get) => ({
@@ -69,9 +102,11 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
   originalImageUrl: null,
   canvasWidth: 800,
   canvasHeight: 600,
+  canvasBg: 'transparent',
   layers: [],
   selectedLayerIds: [],
   activeTool: 'move',
+  toolOptions: defaultToolOptions,
   progress: null,
   undoStack: [],
   redoStack: [],
@@ -95,10 +130,19 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       textOverlays: Object.fromEntries(Object.entries(s.textOverlays).filter(([k]) => !k.startsWith(layerId + '_')))
     })),
 
+  activePanel: 'properties',
+  setActivePanel: (p) => set({ activePanel: p }),
+
   setSession: (id, imagePath, imageUrl, w, h) =>
     set({ sessionId: id, originalImagePath: imagePath, originalImageUrl: imageUrl, canvasWidth: w, canvasHeight: h }),
 
-  setLayers: (layers) => set({ layers }),
+  setLayers: (layers) => set({
+    layers: layers.map(l => ({
+      ...l,
+      blend_mode: (l.blend_mode || 'normal') as import('../types').BlendMode,
+      adjustments: l.adjustments ? { ...DEFAULT_ADJUSTMENTS, ...l.adjustments } : { ...DEFAULT_ADJUSTMENTS },
+    }))
+  }),
 
   updateLayer: (id, patch) =>
     set((s) => ({
@@ -118,11 +162,14 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
 
   setActiveTool: (tool) => set({ activeTool: tool }),
 
+  setToolOption: (key, value) =>
+    set((s) => ({ toolOptions: { ...s.toolOptions, [key]: value } })),
+
   setProgress: (p) => set({ progress: p }),
 
   pushHistory: () =>
     set((s) => ({
-      undoStack: [...s.undoStack, s.layers],
+      undoStack: [...s.undoStack.slice(-49), s.layers],
       redoStack: [],
     })),
 
@@ -159,7 +206,13 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       return { layers: arr.map((l, i) => ({ ...l, z_index: arr.length - i })) }
     }),
 
-  addLayer: (layer) => set((s) => ({ layers: [...s.layers, layer] })),
+  addLayer: (layer) => set((s) => ({
+    layers: [...s.layers, {
+      ...layer,
+      blend_mode: (layer.blend_mode || 'normal') as import('../types').BlendMode,
+      adjustments: layer.adjustments ? { ...DEFAULT_ADJUSTMENTS, ...layer.adjustments } : { ...DEFAULT_ADJUSTMENTS },
+    }]
+  })),
 
   duplicateLayer: (id) =>
     set((s) => {
@@ -181,8 +234,14 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       selectedLayerIds: s.selectedLayerIds.filter((x) => x !== id),
     })),
 
+  renameLayer: (id, name) =>
+    set((s) => ({
+      layers: s.layers.map((l) => l.id === id ? { ...l, name } : l),
+    })),
+
   setCanvasScale: (s) => set({ canvasScale: s }),
   setCanvasOffset: (o) => set({ canvasOffset: o }),
+  setCanvasBg: (bg) => set({ canvasBg: bg }),
 
   reset: () =>
     set({
@@ -198,6 +257,7 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       textRegionsByLayer: {},
       textOverlays: {},
       currentProjectName: null,
+      canvasBg: 'transparent',
     }),
 }), {
   name: 'editor-store',
@@ -207,6 +267,7 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
     originalImageUrl: s.originalImageUrl,
     canvasWidth: s.canvasWidth,
     canvasHeight: s.canvasHeight,
+    canvasBg: s.canvasBg,
     layers: s.layers,
     selectedLayerIds: s.selectedLayerIds,
     canvasScale: s.canvasScale,
@@ -214,5 +275,6 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
     currentProjectName: s.currentProjectName,
     detectedTextRegions: s.detectedTextRegions,
     textRegionsByLayer: s.textRegionsByLayer,
+    toolOptions: s.toolOptions,
   }),
 }))

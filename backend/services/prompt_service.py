@@ -100,7 +100,6 @@ def _heuristic_parse(prompt: str, layer_name: str) -> Dict[str, Any]:
         edit_type = "erase"
     elif any(w in p for w in ["change text", "edit text", "replace text", "text color", "rewrite"]):
         edit_type = "text_edit"
-        edit_params["new_text"] = params.get("new_text", "")
 
     logger.debug(f"[prompt] heuristic: '{p}' → edit_type={edit_type} params={edit_params}")
     return {
