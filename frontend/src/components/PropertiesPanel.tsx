@@ -252,7 +252,7 @@ export const PropertiesPanel: React.FC = () => {
     const s: TextStyle = { ...defaultStyle(r), ...textStyles[i], ...style }
     const key = `${selectedLayer.id}_${i}`
     if (text.trim()) {
-      setTextOverlay(key, { text, color: s.color, font_size: s.font_size, shadow: s.shadow, shadow_color: s.shadow_color, rotation: s.rotation, bbox: r.bbox })
+      setTextOverlay(key, { text, color: s.color, font_size: s.font_size, shadow: s.shadow, shadow_color: s.shadow_color, rotation: s.rotation, bbox: [selectedLayer!.bbox.x + r.bbox[0], selectedLayer!.bbox.y + r.bbox[1], selectedLayer!.bbox.x + r.bbox[2], selectedLayer!.bbox.y + r.bbox[3]] })
     } else {
       // clear overlay if text emptied
       setTextOverlay(key, null)
@@ -290,8 +290,7 @@ export const PropertiesPanel: React.FC = () => {
       for (const [i, newText] of edits) {
         const r = textRegions[+i]; if (!r) continue
         const txtPath = await _callRenderText(r, newText, { ...defaultStyle(r), ...textStyles[+i] })
-        const offX = selectedLayer.bbox.x, offY = selectedLayer.bbox.y
-        const lx1 = r.bbox[0] - offX, ly1 = r.bbox[1] - offY
+        const lx1 = r.bbox[0], ly1 = r.bbox[1]
         const w = r.bbox[2] - r.bbox[0], h = r.bbox[3] - r.bbox[1]
         const regionKey = `${selectedLayer.id}_${i}`
         const existingTxtId = txtLayerIds.current[regionKey]

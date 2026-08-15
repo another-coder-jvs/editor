@@ -294,9 +294,9 @@ export const Canvas: React.FC = () => {
           for (let i = 0; i < regions.length; i++) {
             const r = regions[i]
             const [rx1, ry1, rx2, ry2] = r.bbox
-            // bbox is in full-image coords; layer offset
-            const lx1 = rx1 - selectedLayer.bbox.x, ly1 = ry1 - selectedLayer.bbox.y
-            const lx2 = rx2 - selectedLayer.bbox.x, ly2 = ry2 - selectedLayer.bbox.y
+            // bbox is now layer-local (detect runs on layer PNG)
+            const lx1 = rx1, ly1 = ry1
+            const lx2 = rx2, ly2 = ry2
             const ax = selectedLayer.bbox.x + selectedLayer.position.x + lx1
             const ay = selectedLayer.bbox.y + selectedLayer.position.y + ly1
             if (cx >= ax && cx <= ax + (lx2 - lx1) && cy >= ay && cy <= ay + (ly2 - ly1)) {

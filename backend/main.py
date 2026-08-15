@@ -9,7 +9,11 @@ logger = logging.getLogger(__name__)
 logger.info("Project started.. ! importing files !")
 
 
-import os
+import os 
+os.environ['HF_TOKEN'] = 'hf_Wadljflajdslfjadsf'
+
+# Verify
+print(os.environ.get('HF_TOKEN'))   
 from pathlib import Path
 logger.info(f"Imported : os !")
 from contextlib import asynccontextmanager
