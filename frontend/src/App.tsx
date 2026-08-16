@@ -84,13 +84,12 @@ export default function App() {
           title="Layers & Inspector"
           className="bg-dark-800 border-l border-dark-600 flex-shrink-0"
         >
-          {/* Layers — resizable height */}
+          {/* Layers — resizable height, no title (LayerPanel has its own header) */}
           <ResizablePanel
             edge="bottom"
             defaultSize={260}
             minSize={80}
             maxSize={600}
-            title="Layers"
             className="border-b border-dark-600 w-full"
           >
             <LayerPanel />

@@ -103,3 +103,8 @@ body {
 input[type='range'] {
   accent-color: #4f8ef7;
 }
+
+/* ── API spinner ── */
+@keyframes api-spin {
+  to { transform: rotate(360deg) }
+}

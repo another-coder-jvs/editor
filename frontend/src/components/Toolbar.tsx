@@ -3,6 +3,7 @@ import { useEditorStore } from '../store/editorStore'
 import { saveProject } from '../api/client'
 import { toast } from 'react-toastify'
 import { Undo2, Redo2, Download, FolderOpen, Save, RotateCcw, ImageIcon } from 'lucide-react'
+import { ApiSpinner } from './ApiSpinner'
 
 interface Props {
   onExport: () => void
@@ -47,12 +48,15 @@ export const Toolbar: React.FC<Props> = ({ onExport, onOpenProjects }) => {
   }
 
   return (
-    <header className="flex items-center gap-1 px-3 h-11 bg-dark-800 border-b border-dark-600 flex-shrink-0">
+    <header className="relative flex items-center gap-1 px-3 h-11 bg-dark-800 border-b border-dark-600 flex-shrink-0">
       {/* Logo / brand */}
-      <div className="flex items-center gap-1.5 mr-3">
+      <div className="flex items-center gap-1.5 mr-2">
         <ImageIcon size={18} className="text-accent" />
         <span className="text-sm font-semibold text-white hidden sm:block">AI Editor</span>
       </div>
+
+      {/* API loading spinner — appears next to logo during any request */}
+      <ApiSpinner />
 
       <div className="w-px h-5 bg-dark-500 mx-1" />
 

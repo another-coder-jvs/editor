@@ -50,11 +50,8 @@ export const LayerPanel: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full w-full">
-      <div className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-dark-600 flex items-center justify-between">
-        <span>Layers</span>
-        <button title="Add Layer" onClick={handleAddLayer} className="text-gray-400 hover:text-white p-0.5 rounded hover:bg-dark-600">
-          <Plus size={14} />
-        </button>
+      <div className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-dark-600 flex-shrink-0">
+        Layers
       </div>
       <div className="flex-1 overflow-y-auto py-1">
         {sorted.length === 0 && (
@@ -78,6 +75,14 @@ export const LayerPanel: React.FC = () => {
           />
         ))}
       </div>
+      {/* Sticky Add Layer button */}
+      <button
+        onClick={handleAddLayer}
+        className="flex items-center justify-center gap-1.5 w-full py-2 text-xs text-gray-400 hover:text-white hover:bg-dark-700 border-t border-dark-600 flex-shrink-0 transition-colors"
+      >
+        <Plus size={13} />
+        Add Layer
+      </button>
     </div>
   )
 }

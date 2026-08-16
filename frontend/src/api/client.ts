@@ -1,10 +1,37 @@
 import axios from 'axios'
 import { LayerData, ProgressInfo } from '../types'
 import {baseUrl} from "@/config"
+
+// ── Global loading counter (module-level, reactive via listeners) ──
+let _pending = 0
+const _listeners = new Set<() => void>()
+export const apiLoading = {
+  get active() { return _pending > 0 },
+  subscribe(fn: () => void) { _listeners.add(fn); return () => { _listeners.delete(fn) } },
+  _inc() { _pending++; _listeners.forEach(f => f()) },
+  _dec() { _pending = Math.max(0, _pending - 1); _listeners.forEach(f => f()) },
+}
+
+/** Drop-in replacement for fetch() that triggers the API spinner */
+export async function trackedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  apiLoading._inc()
+  try {
+    return await fetch(input, init)
+  } finally {
+    apiLoading._dec()
+  }
+}
+
 const api = axios.create({
   baseURL: baseUrl || "http://localhost:8000",
   headers: { 'ngrok-skip-browser-warning': '1' },
 })
+
+api.interceptors.request.use(cfg  => { apiLoading._inc(); return cfg })
+api.interceptors.response.use(
+  res => { apiLoading._dec(); return res },
+  err => { apiLoading._dec(); return Promise.reject(err) },
+)
 
 export async function detectObjects(
   file: File,

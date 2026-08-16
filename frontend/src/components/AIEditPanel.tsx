@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
-import { editLayer, reconstructBackground } from '../api/client'
+import { editLayer, reconstructBackground, trackedFetch } from '../api/client'
 import { toast } from 'react-toastify'
 import { baseUrl } from '../config'
 import { Type, Pipette } from 'lucide-react'
@@ -117,7 +117,7 @@ export const AIEditPanel: React.FC = () => {
     try {
       const region = { ...txtLayerRegion, bbox: [selectedLayer.bbox.x, selectedLayer.bbox.y, selectedLayer.bbox.x + txtLayerWidth, selectedLayer.bbox.y + txtLayerHeight], font_size: txtLayerFontSize }
       const overrides = { color: hexToRgb(txtLayerColor), font_size: txtLayerFontSize, shadow_color: null, shadow_offset: [2,2], rotation: selectedLayer.rotation }
-      const res = await fetch(`${baseUrl}/text/render`, {
+      const res = await trackedFetch(`${baseUrl}/text/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
         body: JSON.stringify({ session_id: sessionId, region, new_text: txtLayerText, overrides }),
@@ -185,7 +185,7 @@ export const AIEditPanel: React.FC = () => {
     if (!selectedLayer || !sessionId) return
     setDetectingText(true)
     try {
-      const res = await fetch(`${baseUrl}/text/detect`, {
+      const res = await trackedFetch(`${baseUrl}/text/detect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
         body: JSON.stringify({ session_id: sessionId, layer_id: selectedLayer.id, image_path: selectedLayer.png_path || '' }),
@@ -210,7 +210,7 @@ export const AIEditPanel: React.FC = () => {
 
   const _callEraseBg = async (editedIndices: number[]): Promise<string> => {
     const regions = editedIndices.map(i => textRegions[i]).filter(Boolean)
-    const res = await fetch(`${baseUrl}/text/erase-bg`, {
+    const res = await trackedFetch(`${baseUrl}/text/erase-bg`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
       body: JSON.stringify({
@@ -232,7 +232,7 @@ export const AIEditPanel: React.FC = () => {
       shadow_offset: style?.shadow_offset ?? [2, 2],
       rotation: style?.rotation ?? 0,
     }
-    const res = await fetch(`${baseUrl}/text/render`, {
+    const res = await trackedFetch(`${baseUrl}/text/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
       body: JSON.stringify({ session_id: sessionId, region: r, new_text: newText, overrides }),
