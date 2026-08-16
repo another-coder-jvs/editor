@@ -41,7 +41,7 @@ export function useCanvasDraw(
   canvasScale: number,
 ) {
   const {
-    activeTool, toolOptions, layers, selectedLayerIds,
+    activeTool, toolOptions, layers,
     updateLayer, pushHistory, addLayer, sessionId,
   } = useEditorStore()
 
@@ -67,81 +67,74 @@ export function useCanvasDraw(
     return canvas ? canvas.getContext('2d') : null
   }, [overlayRef])
 
-  // Commit overlay canvas pixels onto the selected layer's image
+  const isFullCanvasDrawLayer = useCallback((layer: typeof layers[number]) =>
+    layer.bbox.x === 0 &&
+    layer.bbox.y === 0 &&
+    layer.bbox.width === canvasWidth &&
+    layer.bbox.height === canvasHeight &&
+    layer.position.x === 0 &&
+    layer.position.y === 0
+  , [canvasWidth, canvasHeight])
+
+  const createDrawLayerDefaults = useCallback((id: string, pngPath: string) => ({
+    id,
+    name: 'Drawing',
+    mask_path: '',
+    png_path: pngPath,
+    bbox: { x: 0, y: 0, width: canvasWidth, height: canvasHeight },
+    z_index: (layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0) + 1,
+    visible: true,
+    opacity: 1,
+    position: { x: 0, y: 0 },
+    scale: { x: 1, y: 1 },
+    rotation: 0,
+    history: ['draw'],
+    locked: false,
+    blend_mode: 'normal' as const,
+    adjustments: {
+      brightness: 100, contrast: 100, saturation: 100,
+      exposure: 0, highlights: 0, shadows: 0,
+      temperature: 0, tint: 0, hue: 0,
+      sharpness: 100, clarity: 0, fade: 0, vignette: 0, grain: 0,
+    },
+  }), [canvasWidth, canvasHeight, layers])
+
+  // Commit overlay canvas pixels onto a full-canvas drawing layer
   const commitToLayer = useCallback(async () => {
     const canvas = overlayRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const selectedLayer = layers.find(l => selectedLayerIds.includes(l.id))
-    if (!selectedLayer) {
-      // No layer selected: create a new draw layer
+    const drawLayer = layers.find(l => l.id.startsWith('draw_') && isFullCanvasDrawLayer(l))
+
+    if (!drawLayer) {
       const dataUrl = canvas.toDataURL('image/png')
-      const newId = `draw_${Date.now()}`
-      addLayer({
-        id: newId,
-        name: 'Drawing',
-        mask_path: '',
-        png_path: dataUrl,
-        bbox: { x: 0, y: 0, width: canvasWidth, height: canvasHeight },
-        z_index: (layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0) + 1,
-        visible: true,
-        opacity: 1,
-        position: { x: 0, y: 0 },
-        scale: { x: 1, y: 1 },
-        rotation: 0,
-        history: ['draw'],
-        locked: false,
-        blend_mode: 'normal',
-        adjustments: {
-          brightness: 100, contrast: 100, saturation: 100,
-          exposure: 0, highlights: 0, shadows: 0,
-          temperature: 0, tint: 0, hue: 0,
-          sharpness: 100, clarity: 0, fade: 0, vignette: 0, grain: 0,
-        },
-      })
+      addLayer(createDrawLayerDefaults(`draw_${Date.now()}`, dataUrl))
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       return
     }
 
-    // Composite overlay onto the layer image
     const offscreen = document.createElement('canvas')
     offscreen.width = canvasWidth
     offscreen.height = canvasHeight
     const offCtx = offscreen.getContext('2d')!
 
-    // Draw existing layer image — use loadImageSafe to handle ngrok CORS
-    const layerUrl = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-      ? selectedLayer.png_path
-      : `${API_BASE}${selectedLayer.png_path}`
+    const layerUrl = drawLayer.png_path.startsWith('blob:') || drawLayer.png_path.startsWith('data:')
+      ? drawLayer.png_path
+      : `${API_BASE}${drawLayer.png_path}`
 
     const img = await loadImageSafe(layerUrl)
-    if (!img) return  // abort if image can't be loaded — don't wipe the layer
-    offCtx.drawImage(img,
-      selectedLayer.bbox.x + selectedLayer.position.x,
-      selectedLayer.bbox.y + selectedLayer.position.y,
-      selectedLayer.bbox.width, selectedLayer.bbox.height)
+    if (img) {
+      offCtx.drawImage(img, 0, 0, canvasWidth, canvasHeight)
+    }
 
-    // Composite overlay
     offCtx.drawImage(canvas, 0, 0)
-
-    // Crop back to layer bbox
-    const cropCanvas = document.createElement('canvas')
-    cropCanvas.width = selectedLayer.bbox.width
-    cropCanvas.height = selectedLayer.bbox.height
-    const cropCtx = cropCanvas.getContext('2d')!
-    cropCtx.drawImage(offscreen,
-      selectedLayer.bbox.x + selectedLayer.position.x,
-      selectedLayer.bbox.y + selectedLayer.position.y,
-      selectedLayer.bbox.width, selectedLayer.bbox.height,
-      0, 0, selectedLayer.bbox.width, selectedLayer.bbox.height)
-
-    const dataUrl = cropCanvas.toDataURL('image/png')
+    const dataUrl = offscreen.toDataURL('image/png')
     pushHistory()
-    updateLayer(selectedLayer.id, { png_path: dataUrl })
+    updateLayer(drawLayer.id, { png_path: dataUrl })
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-  }, [layers, selectedLayerIds, canvasWidth, canvasHeight, updateLayer, pushHistory, addLayer])
+  }, [layers, canvasWidth, canvasHeight, updateLayer, pushHistory, addLayer, isFullCanvasDrawLayer, createDrawLayerDefaults])
 
   const drawBrushStroke = useCallback((ctx: CanvasRenderingContext2D, from: { x: number; y: number }, to: { x: number; y: number }) => {
     const { brushSize, brushOpacity, brushColor, brushHardness, eraserSize } = toolOptions
