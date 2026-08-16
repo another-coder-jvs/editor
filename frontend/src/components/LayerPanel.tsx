@@ -109,7 +109,9 @@ const LayerItem: React.FC<LayerItemProps> = ({
   const [editing, setEditing] = useState(false)
   const [nameVal, setNameVal] = useState(layer.name)
   const [showBlend, setShowBlend] = useState(false)
+  const [blendRect, setBlendRect] = useState<DOMRect | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const blendBtnRef = useRef<HTMLButtonElement>(null)
 
   const commitRename = () => {
     setEditing(false)
@@ -181,14 +183,23 @@ const LayerItem: React.FC<LayerItemProps> = ({
           {/* Blend mode */}
           <div className="relative">
             <button
+              ref={blendBtnRef}
               className="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-1.5 py-0.5 rounded"
-              onClick={e => { e.stopPropagation(); setShowBlend(!showBlend) }}
+              onClick={e => {
+                e.stopPropagation()
+                const rect = blendBtnRef.current?.getBoundingClientRect() ?? null
+                setBlendRect(rect)
+                setShowBlend(!showBlend)
+              }}
               title="Blend mode"
             >
               {(layer.blend_mode || 'normal').slice(0, 4)}
             </button>
-            {showBlend && (
-              <div className="absolute bottom-full right-0 mb-1 bg-dark-700 border border-dark-500 rounded shadow-xl z-50 py-1 max-h-48 overflow-y-auto min-w-max">
+            {showBlend && blendRect && (
+              <div
+                className="fixed bg-dark-700 border border-dark-500 rounded shadow-xl z-[9999] py-1 max-h-48 overflow-y-auto min-w-max"
+                style={{ bottom: window.innerHeight - blendRect.top + 4, right: window.innerWidth - blendRect.right }}
+              >
                 {BLEND_MODES.map(bm => (
                   <button
                     key={bm}
