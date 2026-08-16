@@ -3,18 +3,14 @@ import { useEditorStore } from '../store/editorStore'
 import { AdjustPanel } from './AdjustPanel'
 import { TransformPanel } from './TransformPanel'
 import { AIEditPanel } from './AIEditPanel'
-import { ToolOptionsPanel } from './ToolOptionsPanel'
 
-const TABS = ['AI Edit', 'Adjust', 'Transform', 'Tool'] as const
+const TABS = ['AI Edit', 'Adjust', 'Transform'] as const
 type Tab = typeof TABS[number]
 
 export const PropertiesPanel: React.FC = () => {
-  const { selectedLayerIds, layers, activeTool } = useEditorStore()
+  const { selectedLayerIds, layers } = useEditorStore()
   const [tab, setTab] = useState<Tab>('AI Edit')
   const selectedLayer = layers.find(l => selectedLayerIds[0] === l.id)
-
-  // Auto-switch to Tool tab when a draw/shape tool is active and no layer selected
-  const effectiveTab = !selectedLayer && tab !== 'Tool' ? tab : tab
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -39,7 +35,7 @@ export const PropertiesPanel: React.FC = () => {
             key={t}
             onClick={() => setTab(t)}
             className={`flex-1 py-1.5 text-xs transition-colors ${
-              effectiveTab === t
+              tab === t
                 ? 'text-white border-b-2 border-accent bg-dark-700'
                 : 'text-gray-500 hover:text-gray-300'
             }`}
@@ -51,10 +47,9 @@ export const PropertiesPanel: React.FC = () => {
 
       {/* Panel content */}
       <div className="flex-1 overflow-y-auto">
-        {effectiveTab === 'AI Edit'    && <AIEditPanel />}
-        {effectiveTab === 'Adjust'     && <AdjustPanel />}
-        {effectiveTab === 'Transform'  && <TransformPanel />}
-        {effectiveTab === 'Tool'       && <ToolOptionsPanel />}
+        {tab === 'AI Edit'   && <AIEditPanel />}
+        {tab === 'Adjust'    && <AdjustPanel />}
+        {tab === 'Transform' && <TransformPanel />}
       </div>
     </div>
   )

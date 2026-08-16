@@ -9,6 +9,24 @@ import { baseImagesUrl } from '../config'
 
 const API_BASE = baseImagesUrl || 'http://localhost:8000'
 
+/** Load an image, fetching via proxy for http URLs to avoid CORS/ngrok issues */
+async function loadImageSafe(src: string): Promise<HTMLImageElement | null> {
+  try {
+    let url = src
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      const res = await fetch(src, { headers: { 'ngrok-skip-browser-warning': '1' } })
+      if (!res.ok) return null
+      url = URL.createObjectURL(await res.blob())
+    }
+    return await new Promise<HTMLImageElement>(resolve => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => resolve(null as any)
+      img.src = url
+    })
+  } catch { return null }
+}
+
 function hexToRgba(hex: string, alpha: number) {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
@@ -93,24 +111,17 @@ export function useCanvasDraw(
     offscreen.height = canvasHeight
     const offCtx = offscreen.getContext('2d')!
 
-    // Draw existing layer image
+    // Draw existing layer image — use loadImageSafe to handle ngrok CORS
     const layerUrl = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
       ? selectedLayer.png_path
       : `${API_BASE}${selectedLayer.png_path}`
 
-    await new Promise<void>(resolve => {
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      img.onload = () => {
-        offCtx.drawImage(img,
-          selectedLayer.bbox.x + selectedLayer.position.x,
-          selectedLayer.bbox.y + selectedLayer.position.y,
-          selectedLayer.bbox.width, selectedLayer.bbox.height)
-        resolve()
-      }
-      img.onerror = () => resolve()
-      img.src = layerUrl
-    })
+    const img = await loadImageSafe(layerUrl)
+    if (!img) return  // abort if image can't be loaded — don't wipe the layer
+    offCtx.drawImage(img,
+      selectedLayer.bbox.x + selectedLayer.position.x,
+      selectedLayer.bbox.y + selectedLayer.position.y,
+      selectedLayer.bbox.width, selectedLayer.bbox.height)
 
     // Composite overlay
     offCtx.drawImage(canvas, 0, 0)

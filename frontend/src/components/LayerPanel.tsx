@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { LayerData, BlendMode } from '../types'
-import { Eye, EyeOff, Lock, Unlock, Trash2, Copy, ChevronUp, ChevronDown, Plus } from 'lucide-react'
+import { Eye, EyeOff, Lock, Unlock, Trash2, Copy, ChevronUp, ChevronDown, Plus, GripVertical } from 'lucide-react'
 import { baseImagesUrl } from '../config'
 import { useBlobUrl } from '../hooks/useBlobUrl'
 
@@ -18,10 +18,38 @@ export const LayerPanel: React.FC = () => {
   const {
     layers, selectedLayerIds, selectLayer,
     updateLayer, deleteLayer, duplicateLayer, reorderLayer, addLayer,
-    canvasWidth, canvasHeight, sessionId,
+    canvasWidth, canvasHeight, setLayers,
   } = useEditorStore()
 
   const sorted = [...layers].sort((a, b) => b.z_index - a.z_index)
+
+  // Drag-to-reorder state
+  const dragId = useRef<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
+
+  const onDragStart = (id: string) => { dragId.current = id }
+  const onDragOver = (e: React.DragEvent, id: string) => {
+    e.preventDefault()
+    if (dragId.current !== id) setDragOverId(id)
+  }
+  const onDrop = (targetId: string) => {
+    const srcId = dragId.current
+    dragId.current = null
+    setDragOverId(null)
+    if (!srcId || srcId === targetId) return
+
+    // Reorder: swap z_index values so src takes target's position
+    const src = layers.find(l => l.id === srcId)
+    const tgt = layers.find(l => l.id === targetId)
+    if (!src || !tgt) return
+    const newLayers = layers.map(l => {
+      if (l.id === srcId) return { ...l, z_index: tgt.z_index }
+      if (l.id === targetId) return { ...l, z_index: src.z_index }
+      return l
+    })
+    setLayers(newLayers)
+  }
+  const onDragEnd = () => { dragId.current = null; setDragOverId(null) }
 
   const handleAddLayer = () => {
     const maxZ = layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0
@@ -62,6 +90,7 @@ export const LayerPanel: React.FC = () => {
             key={layer.id}
             layer={layer}
             selected={selectedLayerIds.includes(layer.id)}
+            isDragOver={dragOverId === layer.id}
             onSelect={(e) => selectLayer(layer.id, e.ctrlKey || e.metaKey)}
             onToggleVisible={() => updateLayer(layer.id, { visible: !layer.visible })}
             onToggleLock={() => updateLayer(layer.id, { locked: !layer.locked })}
@@ -72,6 +101,10 @@ export const LayerPanel: React.FC = () => {
             onRename={(name) => updateLayer(layer.id, { name })}
             onBlendMode={(bm) => updateLayer(layer.id, { blend_mode: bm })}
             onOpacity={(op) => updateLayer(layer.id, { opacity: op })}
+            onDragStart={() => onDragStart(layer.id)}
+            onDragOver={(e) => onDragOver(e, layer.id)}
+            onDrop={() => onDrop(layer.id)}
+            onDragEnd={onDragEnd}
           />
         ))}
       </div>
@@ -90,6 +123,7 @@ export const LayerPanel: React.FC = () => {
 interface LayerItemProps {
   layer: LayerData
   selected: boolean
+  isDragOver: boolean
   onSelect: (e: React.MouseEvent) => void
   onToggleVisible: () => void
   onToggleLock: () => void
@@ -100,11 +134,16 @@ interface LayerItemProps {
   onRename: (name: string) => void
   onBlendMode: (bm: BlendMode) => void
   onOpacity: (op: number) => void
+  onDragStart: () => void
+  onDragOver: (e: React.DragEvent) => void
+  onDrop: () => void
+  onDragEnd: () => void
 }
 
 const LayerItem: React.FC<LayerItemProps> = ({
-  layer, selected, onSelect, onToggleVisible, onToggleLock,
+  layer, selected, isDragOver, onSelect, onToggleVisible, onToggleLock,
   onDelete, onDuplicate, onMoveUp, onMoveDown, onRename, onBlendMode, onOpacity,
+  onDragStart, onDragOver, onDrop, onDragEnd,
 }) => {
   const thumbUrl = useBlobUrl(
     layer.png_path
@@ -125,8 +164,21 @@ const LayerItem: React.FC<LayerItemProps> = ({
   }
 
   return (
-    <div className={`layer-item group flex-col gap-0 px-2 py-1.5 ${selected ? 'selected' : ''}`} onClick={onSelect}>
+    <div
+      className={`layer-item group flex-col gap-0 px-2 py-1.5 ${selected ? 'selected' : ''} ${isDragOver ? 'border-t-2 border-accent' : ''}`}
+      onClick={onSelect}
+      draggable
+      onDragStart={e => { e.stopPropagation(); onDragStart() }}
+      onDragOver={e => { e.preventDefault(); onDragOver(e) }}
+      onDrop={e => { e.preventDefault(); onDrop() }}
+      onDragEnd={onDragEnd}
+    >
       <div className="flex items-center gap-1.5 w-full">
+        {/* Drag handle */}
+        <div className="text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" title="Drag to reorder">
+          <GripVertical size={12} />
+        </div>
+
         {/* Thumbnail */}
         <div className="w-7 h-7 rounded bg-dark-600 overflow-hidden flex-shrink-0 border border-dark-500"
           style={{ backgroundImage: 'repeating-conic-gradient(#333 0% 25%, #222 0% 50%) 0 0 / 8px 8px' }}>
@@ -158,18 +210,20 @@ const LayerItem: React.FC<LayerItemProps> = ({
           </span>
         )}
 
-        {/* Controls */}
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-          <IconBtn title="Move up" onClick={(e) => { e.stopPropagation(); onMoveUp() }}><ChevronUp size={11} /></IconBtn>
-          <IconBtn title="Move down" onClick={(e) => { e.stopPropagation(); onMoveDown() }}><ChevronDown size={11} /></IconBtn>
-          <IconBtn title={layer.visible ? 'Hide' : 'Show'} onClick={(e) => { e.stopPropagation(); onToggleVisible() }}>
-            {layer.visible ? <Eye size={11} /> : <EyeOff size={11} />}
-          </IconBtn>
-          <IconBtn title={layer.locked ? 'Unlock' : 'Lock'} onClick={(e) => { e.stopPropagation(); onToggleLock() }}>
-            {layer.locked ? <Lock size={11} /> : <Unlock size={11} />}
-          </IconBtn>
-          <IconBtn title="Duplicate" onClick={(e) => { e.stopPropagation(); onDuplicate() }}><Copy size={11} /></IconBtn>
-          <IconBtn title="Delete" onClick={(e) => { e.stopPropagation(); onDelete() }} className="text-red-400"><Trash2 size={11} /></IconBtn>
+        {/* Controls — arrow buttons always visible, rest on hover */}
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <IconBtn title="Move up (↑)" onClick={(e) => { e.stopPropagation(); onMoveUp() }}><ChevronUp size={11} /></IconBtn>
+          <IconBtn title="Move down (↓)" onClick={(e) => { e.stopPropagation(); onMoveDown() }}><ChevronDown size={11} /></IconBtn>
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <IconBtn title={layer.visible ? 'Hide' : 'Show'} onClick={(e) => { e.stopPropagation(); onToggleVisible() }}>
+              {layer.visible ? <Eye size={11} /> : <EyeOff size={11} />}
+            </IconBtn>
+            <IconBtn title={layer.locked ? 'Unlock' : 'Lock'} onClick={(e) => { e.stopPropagation(); onToggleLock() }}>
+              {layer.locked ? <Lock size={11} /> : <Unlock size={11} />}
+            </IconBtn>
+            <IconBtn title="Duplicate" onClick={(e) => { e.stopPropagation(); onDuplicate() }}><Copy size={11} /></IconBtn>
+            <IconBtn title="Delete" onClick={(e) => { e.stopPropagation(); onDelete() }} className="text-red-400"><Trash2 size={11} /></IconBtn>
+          </div>
         </div>
       </div>
 
