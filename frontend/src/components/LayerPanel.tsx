@@ -152,10 +152,7 @@ const LayerItem: React.FC<LayerItemProps> = ({
   )
   const [editing, setEditing] = useState(false)
   const [nameVal, setNameVal] = useState(layer.name)
-  const [showBlend, setShowBlend] = useState(false)
-  const [blendRect, setBlendRect] = useState<DOMRect | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const blendBtnRef = useRef<HTMLButtonElement>(null)
 
   const commitRename = () => {
     setEditing(false)
@@ -226,53 +223,6 @@ const LayerItem: React.FC<LayerItemProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Opacity + Blend mode row (visible when selected) */}
-      {selected && (
-        <div className="flex items-center gap-1.5 mt-1 w-full" onClick={e => e.stopPropagation()}>
-          {/* Opacity mini slider */}
-          <input
-            type="range" min={0} max={1} step={0.01} value={layer.opacity}
-            onChange={e => onOpacity(parseFloat(e.target.value))}
-            className="flex-1 h-1"
-            title={`Opacity: ${Math.round(layer.opacity * 100)}%`}
-          />
-          <span className="text-xs text-gray-500 w-7 text-right">{Math.round(layer.opacity * 100)}%</span>
-
-          {/* Blend mode */}
-          <div className="relative">
-            <button
-              ref={blendBtnRef}
-              className="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-1.5 py-0.5 rounded"
-              onClick={e => {
-                e.stopPropagation()
-                const rect = blendBtnRef.current?.getBoundingClientRect() ?? null
-                setBlendRect(rect)
-                setShowBlend(!showBlend)
-              }}
-              title="Blend mode"
-            >
-              {(layer.blend_mode || 'normal').slice(0, 4)}
-            </button>
-            {showBlend && blendRect && (
-              <div
-                className="fixed bg-dark-700 border border-dark-500 rounded shadow-xl z-[9999] py-1 max-h-48 overflow-y-auto min-w-max"
-                style={{ bottom: window.innerHeight - blendRect.top + 4, right: window.innerWidth - blendRect.right }}
-              >
-                {BLEND_MODES.map(bm => (
-                  <button
-                    key={bm}
-                    onClick={e => { e.stopPropagation(); onBlendMode(bm); setShowBlend(false) }}
-                    className={`block w-full text-left px-3 py-1 text-xs hover:bg-dark-600 ${layer.blend_mode === bm ? 'text-accent' : 'text-gray-300'}`}
-                  >
-                    {bm}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

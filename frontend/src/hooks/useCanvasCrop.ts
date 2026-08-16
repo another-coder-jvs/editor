@@ -16,7 +16,7 @@ export function useCanvasCrop(
   canvasHeight: number,
   canvasScale: number,
 ) {
-  const { activeTool, layers, selectedLayerIds, updateLayer, pushHistory } = useEditorStore()
+  const { activeTool } = useEditorStore()
   const [cropRect, setCropRect] = useState<CropRect | null>(null)
   const dragging = useRef<Handle>(null)
   const dragStart = useRef<{ mx: number; my: number; rect: CropRect } | null>(null)
@@ -144,51 +144,77 @@ export function useCanvasCrop(
     dragStart.current = null
   }, [])
 
-  // Apply crop on Enter
+  // Apply crop on Enter — composites all visible layers, creates a new layer
   const applyCrop = useCallback(async () => {
-    if (!cropRect) return
-    const selectedLayer = layers.find(l => selectedLayerIds.includes(l.id))
-    if (!selectedLayer) return
+    if (!cropRect || cropRect.w < 2 || cropRect.h < 2) return
+
+    const { layers, addLayer, pushHistory } = useEditorStore.getState()
 
     const offscreen = document.createElement('canvas')
-    offscreen.width = cropRect.w
-    offscreen.height = cropRect.h
+    offscreen.width = Math.round(cropRect.w)
+    offscreen.height = Math.round(cropRect.h)
     const ctx = offscreen.getContext('2d')!
 
-    const layerUrl = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-      ? selectedLayer.png_path
-      : `${API_BASE}${selectedLayer.png_path}`
+    // Composite all visible layers sorted by z_index
+    const visible = [...layers].filter(l => l.visible && l.png_path).sort((a, b) => a.z_index - b.z_index)
 
-    await new Promise<void>(resolve => {
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      img.onload = () => {
-        // Map crop rect (canvas coords) to layer-local coords
-        const lx = cropRect.x - selectedLayer.bbox.x - selectedLayer.position.x
-        const ly = cropRect.y - selectedLayer.bbox.y - selectedLayer.position.y
-        ctx.drawImage(img, lx, ly, cropRect.w, cropRect.h, 0, 0, cropRect.w, cropRect.h)
-        resolve()
+    for (const layer of visible) {
+      const src = layer.png_path.startsWith('blob:') || layer.png_path.startsWith('data:')
+        ? layer.png_path : `${API_BASE}${layer.png_path}`
+
+      let imgSrc = src
+      if (src.startsWith('http://') || src.startsWith('https://')) {
+        try {
+          const res = await fetch(src, { headers: { 'ngrok-skip-browser-warning': '1' } })
+          if (res.ok) imgSrc = URL.createObjectURL(await res.blob())
+        } catch { continue }
       }
-      img.onerror = () => resolve()
-      img.src = layerUrl
-    })
+
+      await new Promise<void>(resolve => {
+        const img = new Image()
+        img.onload = () => {
+          const px = layer.bbox.x + layer.position.x
+          const py = layer.bbox.y + layer.position.y
+          ctx.save()
+          ctx.globalAlpha = layer.opacity
+          ctx.globalCompositeOperation = (layer.blend_mode || 'normal') as GlobalCompositeOperation
+          // Translate so crop origin = (0,0)
+          ctx.drawImage(img, px - cropRect.x, py - cropRect.y, layer.bbox.width, layer.bbox.height)
+          ctx.restore()
+          resolve()
+        }
+        img.onerror = () => resolve()
+        img.src = imgSrc
+      })
+    }
 
     pushHistory()
-    updateLayer(selectedLayer.id, {
+    const maxZ = layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0
+    addLayer({
+      id: `crop_${Date.now()}`,
+      name: 'Crop',
+      mask_path: '',
       png_path: offscreen.toDataURL('image/png'),
-      bbox: {
-        x: cropRect.x,
-        y: cropRect.y,
-        width: cropRect.w,
-        height: cropRect.h,
-      },
+      bbox: { x: Math.round(cropRect.x), y: Math.round(cropRect.y), width: Math.round(cropRect.w), height: Math.round(cropRect.h) },
+      z_index: maxZ + 1,
+      visible: true,
+      opacity: 1,
       position: { x: 0, y: 0 },
+      scale: { x: 1, y: 1 },
+      rotation: 0,
+      history: ['crop'],
+      locked: false,
+      blend_mode: 'normal',
+      adjustments: {
+        brightness: 100, contrast: 100, saturation: 100, exposure: 0,
+        highlights: 0, shadows: 0, temperature: 0, tint: 0, hue: 0,
+        sharpness: 100, clarity: 0, fade: 0, vignette: 0, grain: 0,
+      },
     })
 
     setCropRect(null)
-    const canvas = cropRef.current
-    if (canvas) canvas.getContext('2d')?.clearRect(0, 0, canvasWidth, canvasHeight)
-  }, [cropRect, layers, selectedLayerIds, updateLayer, pushHistory, canvasWidth, canvasHeight, cropRef])
+    cropRef.current?.getContext('2d')?.clearRect(0, 0, canvasWidth, canvasHeight)
+  }, [cropRect, canvasWidth, canvasHeight, cropRef])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

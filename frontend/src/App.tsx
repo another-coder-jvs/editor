@@ -6,9 +6,10 @@ import 'react-toastify/dist/ReactToastify.css'
 import { useEditorStore } from './store/editorStore'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { Toolbar } from './components/Toolbar'
-import { LeftPanel } from './components/LeftPanel'
+import { LayerPanel } from './components/LayerPanel'
 import { Canvas } from './components/Canvas'
 import { PropertiesPanel } from './components/PropertiesPanel'
+import { ToolPanel } from './components/ToolPanel'
 import { ResizablePanel } from './components/ResizablePanel'
 import { ProgressBar } from './components/ProgressBar'
 import { ImageUploader } from './components/ImageUploader'
@@ -57,16 +58,16 @@ export default function App() {
       {/* ── Main workspace ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Left: tools (icon strip + options) + layers */}
+        {/* Left: Layers only */}
         <ResizablePanel
           edge="right"
-          defaultSize={260}
+          defaultSize={220}
           minSize={160}
-          maxSize={480}
-          title="Tools & Layers"
+          maxSize={400}
+          title="Layers"
           className="bg-dark-800 border-r border-dark-600 flex-shrink-0"
         >
-          <LeftPanel />
+          <LayerPanel />
         </ResizablePanel>
 
         {/* Center: canvas */}
@@ -74,16 +75,35 @@ export default function App() {
           {originalImageUrl ? <Canvas /> : <ImageUploader />}
         </main>
 
-        {/* Right: Inspector (AI Edit / Adjust / Transform) */}
+        {/* Right: Tools (top) + Inspector (bottom) */}
         <ResizablePanel
           edge="left"
-          defaultSize={260}
-          minSize={180}
+          defaultSize={280}
+          minSize={200}
           maxSize={480}
-          title="Inspector"
+          title="Tools & Inspector"
           className="bg-dark-800 border-l border-dark-600 flex-shrink-0"
         >
-          <PropertiesPanel />
+          {/* Tools — resizable height */}
+          <ResizablePanel
+            edge="bottom"
+            defaultSize={320}
+            minSize={120}
+            maxSize={600}
+            title="Tools"
+            className="border-b border-dark-600 w-full"
+          >
+            <ToolPanel />
+          </ResizablePanel>
+
+          {/* Inspector — fills remaining */}
+          <ResizablePanel
+            title="Inspector"
+            edge="bottom"
+            className="w-full"
+          >
+            <PropertiesPanel />
+          </ResizablePanel>
         </ResizablePanel>
 
       </div>
