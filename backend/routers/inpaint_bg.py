@@ -7,8 +7,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from PIL import Image
 from utils import config
-from services.text_service import _get_lama
-
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -43,23 +41,8 @@ def inpaint_bg(req: InpaintBgRequest):
     if mask_raw.size != orig.size:
         mask_raw = mask_raw.resize(orig.size, Image.NEAREST)
 
-    # Dilate mask slightly to cover edges/anti-aliasing
-    import cv2
-    mask_arr = np.array(mask_raw)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask_arr = cv2.dilate(mask_arr, kernel, iterations=1)
-    mask_pil = Image.fromarray(mask_arr)
-
-    lama = _get_lama()
-    if lama is not None:
-        try:
-            result = lama(orig, mask_pil)
-            logger.info("[inpaint-bg] LaMa reconstruction done")
-        except Exception as e:
-            logger.warning(f"[inpaint-bg] LaMa failed ({e}), falling back to cv2.inpaint")
-            result = _cv2_inpaint(orig, mask_arr)
-    else:
-        result = _cv2_inpaint(orig, mask_arr)
+    from services.inpaint_service import inpaint_background
+    result = inpaint_background(orig, np.array(mask_raw))
 
     out_name = f"{req.layer_id}_bg_reconstructed_{uuid.uuid4().hex[:8]}.png"
     out_path = config.TEMP_DIR / req.session_id / out_name
@@ -67,11 +50,3 @@ def inpaint_bg(req: InpaintBgRequest):
     result.save(str(out_path))
 
     return {"path": f"/temp/{req.session_id}/{out_name}"}
-
-
-def _cv2_inpaint(img: Image.Image, mask_arr: np.ndarray) -> Image.Image:
-    import cv2
-    arr = np.array(img)
-    inpainted = cv2.inpaint(arr, mask_arr, inpaintRadius=12, flags=cv2.INPAINT_TELEA)
-    inpainted = cv2.inpaint(inpainted, mask_arr, inpaintRadius=6, flags=cv2.INPAINT_NS)
-    return Image.fromarray(inpainted)
