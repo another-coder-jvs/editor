@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
-import { exportImage, saveProject } from '../api/client'
+import { saveProject } from '../api/client'
+import { mergeLayersClient } from '../utils/mergeLayersClient'
 import { toast } from 'react-toastify'
 import { X } from 'lucide-react'
 
@@ -19,15 +20,7 @@ export const ExportModal: React.FC<Props> = ({ onClose }) => {
     if (!sessionId) return
     setLoading(true)
     try {
-      const blob = await exportImage({
-        session_id: sessionId,
-        layers,
-        canvas_width: canvasWidth,
-        canvas_height: canvasHeight,
-        format,
-        upscale,
-        upscale_factor: upscaleFactor,
-      })
+      const blob = await mergeLayersClient(layers, canvasWidth, canvasHeight, format, quality / 100)
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

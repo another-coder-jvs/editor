@@ -38,12 +38,62 @@ body {
   @apply bg-dark-500 border border-accent;
 }
 
+/* ── Top header toolbar buttons ── */
 .toolbar-btn {
-  @apply flex flex-col items-center justify-center gap-1 p-2 rounded text-xs;
+  @apply flex items-center justify-center gap-1 px-2 py-1.5 rounded text-xs;
   @apply hover:bg-dark-600 transition-colors cursor-pointer;
 }
 .toolbar-btn.active {
   @apply bg-accent text-white;
+}
+
+/* ── Left vertical tool sidebar ── */
+.tool-sidebar-container {
+  width: 48px;
+  background: #1a1a1a;
+  border-right: 1px solid #2e2e2e;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.tool-sidebar {
+  width: 48px;
+}
+
+.tool-sidebar-btn {
+  @apply relative flex items-center justify-center rounded cursor-pointer transition-colors;
+  width: 36px;
+  height: 36px;
+  color: #9ca3af;
+}
+.tool-sidebar-btn:hover {
+  background: #2e2e2e;
+  color: #e5e7eb;
+}
+.tool-sidebar-btn.active {
+  background: #4f8ef7;
+  color: #ffffff;
+}
+
+/* ── Right panel ── */
+.right-panel {
+  width: 260px;
+}
+
+@media (max-width: 1280px) {
+  .right-panel {
+    width: 240px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .right-panel {
+    width: 220px;
+  }
+  .tool-sidebar-container,
+  .tool-sidebar {
+    width: 42px;
+  }
 }
 
 .panel {

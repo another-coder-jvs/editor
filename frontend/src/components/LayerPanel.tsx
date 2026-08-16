@@ -49,7 +49,7 @@ export const LayerPanel: React.FC = () => {
   }
 
   return (
-    <div className="panel w-56 flex flex-col h-full">
+    <div className="flex flex-col h-full w-full">
       <div className="px-3 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-dark-600 flex items-center justify-between">
         <span>Layers</span>
         <button title="Add Layer" onClick={handleAddLayer} className="text-gray-400 hover:text-white p-0.5 rounded hover:bg-dark-600">
