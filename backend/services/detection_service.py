@@ -1,10 +1,11 @@
 """
-Detection service – BLIP captions the image to find object names,
-then Grounding DINO localises them with bounding boxes.
+Detection service – BLIP captions + CLIP zero-shot classification
+find object names, then Grounding DINO localises them with bounding boxes.
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,9 @@ from PIL import Image
 from services.model_manager import model_manager, DEVICE
 
 logger = logging.getLogger(__name__)
+
+os.environ["MPLBACKEND"] = "Agg"  # avoid Colab matplotlib backend error
+
 
 # ── BLIP pre-detector ─────────────────────────────────────────────────────
 _blip_processor = None
@@ -25,8 +29,6 @@ BLIP_MODEL_NAME = "Salesforce/blip-image-captioning-base"
 def _get_blip():
     global _blip_processor, _blip_model
     if _blip_processor is None:
-        import os
-        os.environ["MPLBACKEND"] = "Agg"
         from transformers import BlipProcessor, BlipForConditionalGeneration
 
         logger.info("[detection] loading BLIP model…")
@@ -67,7 +69,6 @@ def _blip_detect(image_path: str) -> List[str]:
     caption = processor.decode(output[0], skip_special_tokens=True)
     logger.info(f"[detection] BLIP caption: '{caption}'")
 
-    # Extract words from caption
     words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9_-]*\b", caption.lower())
 
     objects: List[str] = []
@@ -77,8 +78,126 @@ def _blip_detect(image_path: str) -> List[str]:
         if word not in objects:
             objects.append(word)
 
-    logger.info(f"[detection] extracted {len(objects)} object names: {objects}")
+    logger.info(f"[detection] BLIP extracted {len(objects)} object names: {objects}")
     return objects
+
+
+# ── CLIP zero-shot classifier ────────────────────────────────────────────
+_clip_processor = None
+_clip_model = None
+
+CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
+
+# Broad set of candidate labels CLIP evaluates against the image
+_CLIP_CANDIDATES = [
+    # People & animals
+    "person", "man", "woman", "child", "baby",
+    "dog", "cat", "bird", "horse", "fish", "elephant", "bear", "lion",
+    "tiger", "rabbit", "monkey", "deer", "snake", "turtle", "frog",
+    # Clothing & accessories
+    "shoe", "sneaker", "boot", "sandal", "hat", "cap", "glasses",
+    "sunglasses", "watch", "ring", "necklace", "bracelet", "bag",
+    "backpack", "handbag", "purse", "wallet", "belt", "scarf", "gloves",
+    "jacket", "coat", "shirt", "pants", "dress", "skirt", "suit", "tie",
+    # Electronics
+    "phone", "smartphone", "laptop", "computer", "tablet", "monitor",
+    "television", "camera", "headphones", "speaker", "keyboard", "mouse",
+    "remote", "earbuds", "watch",
+    # Food & drink
+    "food", "fruit", "apple", "banana", "orange", "grape", "strawberry",
+    "pizza", "burger", "sandwich", "cake", "cookie", "bread",
+    "coffee", "cup", "mug", "bottle", "glass", "wine glass",
+    # Objects
+    "book", "magazine", "newspaper", "pen", "pencil", "scissors",
+    "clock", "watch", "lamp", "chair", "table", "desk", "sofa", "bed",
+    "pillow", "blanket", "towel", "mirror", "vase", "flower",
+    "plant", "tree", "umbrella", "key", "coin", "ball", "toy",
+    "box", "bag", "basket", "bowl", "plate", "fork", "knife", "spoon",
+    # Vehicles
+    "car", "truck", "bus", "motorcycle", "bicycle", "boat", "airplane",
+    "train", "helicopter", "scooter", "skateboard",
+    # Buildings & structures
+    "house", "building", "bridge", "tower", "fence", "door", "window",
+    "stairs", "roof", "wall", "floor",
+    # Nature
+    "mountain", "hill", "river", "lake", "ocean", "beach", "forest",
+    "cloud", "sun", "moon", "star", "sky", "rain", "snow",
+    # Design & graphics
+    "logo", "icon", "badge", "poster", "banner", "sign", "label",
+    "sticker", "frame", "border", "pattern", "background",
+    # Misc
+    "globe", "earth", "map", "pin", "location", "heart", "star",
+    "arrow", "circle", "triangle", "square", "text", "number",
+    "discount", "sale", "percentage", "phone icon",
+]
+
+
+def _get_clip():
+    global _clip_processor, _clip_model
+    if _clip_processor is None:
+        from transformers import CLIPProcessor, CLIPModel
+
+        logger.info("[detection] loading CLIP model…")
+        _clip_processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
+        _clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(DEVICE)
+        _clip_model.eval()
+        logger.info("[detection] CLIP model ready")
+    return _clip_processor, _clip_model
+
+
+def _clip_classify(image_path: str, top_k: int = 30, threshold: float = 0.22) -> List[str]:
+    """Run CLIP zero-shot classification. Return labels above threshold, sorted by score."""
+    processor, model = _get_clip()
+
+    image = Image.open(image_path).convert("RGB")
+    image.thumbnail((1024, 1024))
+
+    # CLIP classifies image against all candidate labels
+    inputs = processor(
+        text=_CLIP_CANDIDATES,
+        images=image,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    # Cosine similarity → probabilities
+    logits = outputs.logits_per_image[0]
+    probs = logits.softmax(dim=-1).cpu().tolist()
+
+    # Pair each label with its score, sort descending
+    scored = sorted(zip(_CLIP_CANDIDATES, probs), key=lambda x: x[1], reverse=True)
+
+    # Take top-k above threshold
+    objects: List[str] = []
+    for label, score in scored[:top_k]:
+        if score >= threshold:
+            objects.append(label)
+
+    logger.info(f"[detection] CLIP found {len(objects)} objects: {objects}")
+    return objects
+
+
+# ── Merge BLIP + CLIP results ─────────────────────────────────────────────
+
+def _merge_object_names(blip_objects: List[str], clip_objects: List[str]) -> List[str]:
+    """Merge BLIP caption words + CLIP classified labels into one deduplicated list."""
+    # CLIP labels are more reliable (trained for visual recognition), prioritize them
+    merged: List[str] = []
+
+    for name in clip_objects:
+        if name not in merged:
+            merged.append(name)
+
+    for name in blip_objects:
+        if name not in merged:
+            merged.append(name)
+
+    logger.info(f"[detection] merged {len(merged)} object names: {merged}")
+    return merged
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -122,15 +241,17 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    # ── Step 1: BLIP captions the image → extract object names → build DINO prompt ──
+    # ── Step 1: Get object names from BLIP + CLIP ──
     if prompt:
-        # User supplied a custom prompt — use it directly
         dino_prompt = prompt
         logger.info(f"[detection] using custom prompt: '{dino_prompt[:80]}'")
     else:
         blip_objects = _blip_detect(image_path)
-        if not blip_objects:
-            logger.info("[detection] BLIP found nothing — falling back to broad prompt")
+        clip_objects = _clip_classify(image_path)
+        merged = _merge_object_names(blip_objects, clip_objects)
+
+        if not merged:
+            logger.info("[detection] both BLIP and CLIP found nothing — falling back to broad prompt")
             dino_prompt = (
                 "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
                 "dog . cat . bird . horse . cow . sheep . elephant . bear . "
@@ -146,8 +267,8 @@ def detect_objects(
                 "discount . sale . offer"
             )
         else:
-            dino_prompt = " . ".join(blip_objects)
-            logger.info(f"[detection] built DINO prompt from BLIP: '{dino_prompt}'")
+            dino_prompt = " . ".join(merged)
+            logger.info(f"[detection] built DINO prompt from BLIP+CLIP: '{dino_prompt}'")
 
     # ── Step 2: Grounding DINO localises each object ──
     logger.info("[detection] loading Grounding DINO model…")

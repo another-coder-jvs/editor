@@ -300,3 +300,13 @@ Step 2 — Apply (handleApplyTextEdits)
    • Draws new text onto txtCanvas using fillText with detected color/font_size
 4. Saves bgCanvas → blob URL → replaces layer's png_path (background with transparent hole)
 5. Saves txtCanvas → blob URL → adds as a new layer on top
+
+
+
+
+Canva's AI Object Detection (Magic Grab / Magic Edit) likely uses a combination of:
+1. SAM 2 (Segment Anything Model 2) — Meta's model that segments any object in an image given a prompt (point, box, or text). Same as what your project uses.
+2. Grounding DINO — Text-to-object detection. You describe what you want ("sneaker", "logo", "phone"), it finds bounding boxes. Same as your project.
+3. CLIP — OpenAI's vision-language model for understanding what's in an image and matching text descriptions to visual content.
+4. Custom fine-tuned models — Canva has a large design corpus, so they likely have fine-tuned versions of these models specifically for design elements (text, logos, shapes, backgrounds).  ( only difference ) 
+ 
