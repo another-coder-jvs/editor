@@ -29,18 +29,79 @@ def _get_yolo():
     return _yolo_model
 
 
-def _yolo_detect(image_path: str, conf: float = 0.25) -> List[str]:
-    """Run YOLO on the image, return unique class names found."""
+# YOLO COCO class names → expanded DINO-friendly synonyms
+_CLASS_MAP = {
+    "sneaker": "sneaker . shoe . footwear",
+    "shoe": "shoe . sneaker . footwear",
+    "handbag": "handbag . bag . purse",
+    "backpack": "backpack . bag",
+    "tie": "tie . necktie",
+    "suitcase": "suitcase . luggage . bag",
+    "bottle": "bottle . water bottle",
+    "cup": "cup . mug . glass",
+    "bowl": "bowl . dish",
+    "chair": "chair . seat",
+    "couch": "couch . sofa",
+    "potted plant": "plant . flower pot",
+    "bed": "bed",
+    "dining table": "table . desk",
+    "toilet": "toilet",
+    "tv": "television . tv . screen . monitor",
+    "laptop": "laptop . computer",
+    "cell phone": "phone . mobile phone . smartphone",
+    "mouse": "mouse",
+    "remote": "remote control",
+    "keyboard": "keyboard",
+    "book": "book . magazine",
+    "clock": "clock . watch",
+    "vase": "vase",
+    "scissors": "scissors",
+    "teddy bear": "teddy bear . stuffed animal",
+    "hair drier": "hair dryer",
+    "toothbrush": "toothbrush",
+}
+
+
+# Extra terms to always include — catches objects YOLO can't detect (logos, icons, etc.)
+_ALWAYS_INCLUDE = (
+    "logo . icon . banner . poster . sign . label . badge . "
+    "globe . earth . phone icon . location . pin . map marker . "
+    "discount . sale . offer"
+)
+
+
+def _yolo_detect(image_path: str, conf: float = 0.15) -> List[str]:
+    """Run YOLO on the image, return expanded DINO-friendly terms."""
     yolo = _get_yolo()
     results = yolo(image_path, conf=conf, verbose=False)
-    names: List[str] = []
+    raw_names: List[str] = []
     for r in results:
         for cls_id in r.boxes.cls.tolist():
             name = yolo.names[int(cls_id)]
-            if name not in names:
-                names.append(name)
-    logger.info(f"[detection] YOLO found {len(names)} classes: {names}")
-    return names
+            if name not in raw_names:
+                raw_names.append(name)
+
+    # Expand each YOLO class into DINO-friendly synonyms
+    expanded: List[str] = []
+    for name in raw_names:
+        mapping = _CLASS_MAP.get(name)
+        if mapping:
+            for term in mapping.split(" . "):
+                term = term.strip()
+                if term and term not in expanded:
+                    expanded.append(term)
+        else:
+            if name not in expanded:
+                expanded.append(name)
+
+    # Always append extra terms YOLO can't detect
+    for term in _ALWAYS_INCLUDE.split(" . "):
+        term = term.strip()
+        if term and term not in expanded:
+            expanded.append(term)
+
+    logger.info(f"[detection] YOLO raw classes: {raw_names} → expanded ({len(expanded)}): {expanded}")
+    return expanded
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -76,8 +137,8 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
 def detect_objects(
     image_path: str,
     prompt: Optional[str] = None,
-    box_threshold: float = 0.25,
-    text_threshold: float = 0.25,
+    box_threshold: float = 0.15,
+    text_threshold: float = 0.15,
 ) -> List[Dict[str, Any]]:
     logger.info(f"[detection] loading image: {image_path}")
     image = Image.open(image_path).convert("RGB")
@@ -104,7 +165,9 @@ def detect_objects(
                 "door . window . stairs . sign . poster . banner . "
                 "fire hydrant . traffic light . bench . trash can . "
                 "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . "
-                "icon . phone icon . globe . earth . location . pin . map marker . logo"
+                "logo . icon . banner . poster . sign . label . badge . "
+                "globe . earth . phone icon . location . pin . map marker . "
+                "discount . sale . offer"
             )
         else:
             # Build DINO prompt from YOLO class names
