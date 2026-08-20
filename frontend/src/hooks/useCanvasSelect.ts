@@ -1,6 +1,7 @@
 /**
- * useCanvasSelect – handles selection tools: rect, ellipse, lasso, free, magic_select
+ * useCanvasSelect – handles selection tools: rect, ellipse, lasso, free, magic_select, object_select
  * Draws marching-ants selection overlay and exposes selection mask.
+ * Also renders AI-detected bbox overlays (magic_select / object_select).
  */
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
@@ -18,7 +19,7 @@ export function useCanvasSelect(
   canvasScale: number,
   onSelectionChange: (mask: SelectionMask | null) => void,
 ) {
-  const { activeTool, toolOptions } = useEditorStore()
+  const { activeTool, toolOptions, aiSelections } = useEditorStore()
   const drawing = useRef(false)
   const startPos = useRef<{ x: number; y: number } | null>(null)
   const lassoPoints = useRef<{ x: number; y: number }[]>([])
@@ -38,15 +39,8 @@ export function useCanvasSelect(
     }
   }, [canvasScale, selectionRef])
 
-  // Draw marching ants
-  const drawSelection = useCallback((mask: SelectionMask | null) => {
-    const canvas = selectionRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight)
-    if (!mask) return
-
+  // Draw marching ants for a single selection mask
+  const drawMask = useCallback((ctx: CanvasRenderingContext2D, mask: SelectionMask) => {
     ctx.save()
     ctx.setLineDash([6, 3])
     ctx.lineDashOffset = -marchOffset.current
@@ -73,18 +67,68 @@ export function useCanvasSelect(
     ctx.fillStyle = 'rgba(79,142,247,0.12)'
     ctx.fill()
     ctx.restore()
-  }, [canvasWidth, canvasHeight, canvasScale, selectionRef])
+  }, [canvasScale])
 
-  // Animate marching ants
+  // Draw AI detection bbox overlays with marching ants
+  const drawAiSelections = useCallback((ctx: CanvasRenderingContext2D) => {
+    if (!aiSelections.length) return
+    aiSelections.forEach((obj, i) => {
+      const { x, y, width, height } = obj.bbox
+      ctx.save()
+      ctx.setLineDash([6, 3])
+      ctx.lineDashOffset = -marchOffset.current - i * 4 // offset per box
+      ctx.strokeStyle = '#4f8ef7'
+      ctx.lineWidth = 2 / canvasScale
+      ctx.shadowColor = '#000'
+      ctx.shadowBlur = 2
+
+      // Draw bbox
+      ctx.strokeRect(x, y, width, height)
+
+      // Fill
+      ctx.setLineDash([])
+      ctx.fillStyle = 'rgba(79,142,247,0.1)'
+      ctx.fillRect(x, y, width, height)
+
+      // Label
+      const label = `${obj.label} ${Math.round(obj.score * 100)}%`
+      ctx.font = `bold ${12 / canvasScale}px sans-serif`
+      const textW = ctx.measureText(label).width
+      const labelH = 16 / canvasScale
+      ctx.fillStyle = 'rgba(79,142,247,0.9)'
+      ctx.fillRect(x, y - labelH - 2, textW + 8 / canvasScale, labelH + 4 / canvasScale)
+      ctx.fillStyle = '#fff'
+      ctx.fillText(label, x + 4 / canvasScale, y - 4 / canvasScale)
+
+      ctx.restore()
+    })
+  }, [aiSelections, canvasScale])
+
+  // Combined draw: selection mask + AI bboxes
+  const drawSelection = useCallback((mask: SelectionMask | null) => {
+    const canvas = selectionRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight)
+
+    // Draw AI selection bboxes
+    drawAiSelections(ctx)
+
+    // Draw geometric selection mask
+    if (mask) drawMask(ctx, mask)
+  }, [canvasWidth, canvasScale, selectionRef, drawAiSelections, drawMask])
+
+  // Animate marching ants (selection mask + AI bboxes)
   useEffect(() => {
     const animate = () => {
       marchOffset.current = (marchOffset.current + 0.3) % 9
-      if (selection) drawSelection(selection)
+      drawSelection(selection)
       animRef.current = requestAnimationFrame(animate)
     }
     animRef.current = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(animRef.current)
-  }, [selection, drawSelection])
+  }, [selection, drawSelection, aiSelections])
 
   const onMouseDown = useCallback((e: MouseEvent) => {
     if (!SELECT_TOOLS.includes(activeTool)) return

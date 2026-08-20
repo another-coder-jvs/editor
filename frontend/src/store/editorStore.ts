@@ -60,6 +60,12 @@ interface EditorState {
   activePanel: string
   setActivePanel: (p: string) => void
 
+  // AI Selections (magic_select / object_select)
+  aiSelections: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }>
+  aiSelectionLayerId: string | null
+  setAiSelections: (selections: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }>, layerId: string) => void
+  clearAiSelections: () => void
+
   // Actions
   setSession: (id: string, imagePath: string, imageUrl: string, w: number, h: number) => void
   setLayers: (layers: LayerData[]) => void
@@ -132,6 +138,11 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
 
   activePanel: 'properties',
   setActivePanel: (p) => set({ activePanel: p }),
+
+  aiSelections: [],
+  aiSelectionLayerId: null,
+  setAiSelections: (selections, layerId) => set({ aiSelections: selections, aiSelectionLayerId: layerId }),
+  clearAiSelections: () => set({ aiSelections: [], aiSelectionLayerId: null }),
 
   setSession: (id, imagePath, imageUrl, w, h) =>
     set({ sessionId: id, originalImagePath: imagePath, originalImageUrl: imageUrl, canvasWidth: w, canvasHeight: h }),
@@ -258,6 +269,8 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
       textOverlays: {},
       currentProjectName: null,
       canvasBg: 'transparent',
+      aiSelections: [],
+      aiSelectionLayerId: null,
     }),
 }), {
   name: 'editor-store',
@@ -276,5 +289,7 @@ export const useEditorStore = create<EditorState>()(persist((set, get) => ({
     detectedTextRegions: s.detectedTextRegions,
     textRegionsByLayer: s.textRegionsByLayer,
     toolOptions: s.toolOptions,
+    aiSelections: s.aiSelections,
+    aiSelectionLayerId: s.aiSelectionLayerId,
   }),
 }))
