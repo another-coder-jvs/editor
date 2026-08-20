@@ -20,6 +20,8 @@ _yolo_model = None
 def _get_yolo():
     global _yolo_model
     if _yolo_model is None:
+        import os
+        os.environ["MPLBACKEND"] = "Agg"  # avoid Colab matplotlib backend error
         from ultralytics import YOLO
         logger.info("[detection] loading YOLOv8 model…")
         _yolo_model = YOLO("yolov8m.pt")
