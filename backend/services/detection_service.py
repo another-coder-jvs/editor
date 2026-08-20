@@ -1,5 +1,5 @@
 """
-Detection service – uses Grounding DINO to find all objects in an image.
+Detection service – YOLO pre-detects object names, Grounding DINO localises them.
 """
 from __future__ import annotations
 
@@ -13,22 +13,35 @@ from services.model_manager import model_manager, DEVICE
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROMPT = (
-    "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
-    "animal . shoe . icon . logo . "
-    "tree . flower . plant . "
-    "building . house . bridge . tower . fence . "
-    "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
-    "bottle . cup . bowl . plate . fork . knife . spoon . "
-    "book . laptop . phone . keyboard . monitor . television . camera . "
-    "bag . backpack . suitcase . umbrella . hat . shoe . sneaker . glasses . "
-    "door . window . stairs . "
-    "sign . poster . banner . "
-    "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase . "
-    "ball . helmet . food . mobile phone . stone . "
-    "icon . phone icon . globe . earth . location . pin . map marker . "
-)
+# ── YOLO pre-detector ──────────────────────────────────────────────────────
+_yolo_model = None
+
+
+def _get_yolo():
+    global _yolo_model
+    if _yolo_model is None:
+        from ultralytics import YOLO
+        logger.info("[detection] loading YOLOv8 model…")
+        _yolo_model = YOLO("yolov8m.pt")
+        logger.info("[detection] YOLOv8 ready")
+    return _yolo_model
+
+
+def _yolo_detect(image_path: str, conf: float = 0.25) -> List[str]:
+    """Run YOLO on the image, return unique class names found."""
+    yolo = _get_yolo()
+    results = yolo(image_path, conf=conf, verbose=False)
+    names: List[str] = []
+    for r in results:
+        for cls_id in r.boxes.cls.tolist():
+            name = yolo.names[int(cls_id)]
+            if name not in names:
+                names.append(name)
+    logger.info(f"[detection] YOLO found {len(names)} classes: {names}")
+    return names
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _iou(a: List[float], b: List[float]) -> float:
     """IoU between two [x1,y1,x2,y2] boxes."""
@@ -44,19 +57,19 @@ def _iou(a: List[float], b: List[float]) -> float:
 
 def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     """Remove duplicate detections — keep highest-score box when IoU > threshold."""
-    # Sort by score descending
     objects = sorted(objects, key=lambda o: o["score"], reverse=True)
     kept = []
     for obj in objects:
         b = obj["bbox"]
         box = [b["x"], b["y"], b["x"] + b["width"], b["y"] + b["height"]]
         if all(_iou(box, [k["bbox"]["x"], k["bbox"]["y"],
-                          k["bbox"]["x"] + k["bbox"]["width"],
-                          k["bbox"]["y"] + k["bbox"]["height"]]) < iou_threshold
+                          k["bbox"]["x"] + k["bbox"]["width"], k["bbox"]["y"] + k["bbox"]["height"]]) < iou_threshold
                for k in kept):
             kept.append(obj)
     return kept
 
+
+# ── Main detection pipeline ────────────────────────────────────────────────
 
 def detect_objects(
     image_path: str,
@@ -69,14 +82,39 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    text = prompt or DEFAULT_PROMPT
-    logger.info(f"[detection] using prompt: '{text[:80]}…'")
+    # ── Step 1: YOLO finds what objects exist in the image ──
+    if prompt:
+        # User supplied a custom prompt — skip YOLO, use it directly
+        dino_prompt = prompt
+        logger.info(f"[detection] using custom prompt: '{dino_prompt[:80]}'")
+    else:
+        yolo_classes = _yolo_detect(image_path)
+        if not yolo_classes:
+            logger.info("[detection] YOLO found nothing — falling back to broad prompt")
+            dino_prompt = (
+                "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
+                "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+                "tree . flower . plant . building . house . bridge . tower . fence . "
+                "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
+                "bottle . cup . bowl . plate . fork . knife . spoon . "
+                "book . laptop . phone . keyboard . monitor . television . camera . "
+                "bag . backpack . suitcase . umbrella . hat . shoe . sneaker . glasses . "
+                "door . window . stairs . sign . poster . banner . "
+                "fire hydrant . traffic light . bench . trash can . "
+                "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . "
+                "icon . phone icon . globe . earth . location . pin . map marker . logo"
+            )
+        else:
+            # Build DINO prompt from YOLO class names
+            dino_prompt = " . ".join(yolo_classes)
+            logger.info(f"[detection] built DINO prompt from YOLO: '{dino_prompt}'")
 
+    # ── Step 2: Grounding DINO localises each object ──
     logger.info("[detection] loading Grounding DINO model…")
     model, processor = model_manager.get_grounding_dino()
     logger.info("[detection] model ready, running inference…")
 
-    inputs = processor(images=image, text=text, return_tensors="pt").to(DEVICE)
+    inputs = processor(images=image, text=dino_prompt, return_tensors="pt").to(DEVICE)
     logger.debug(f"[detection] input_ids shape: {inputs.input_ids.shape}")
 
     with torch.no_grad():
@@ -89,9 +127,7 @@ def detect_objects(
         target_sizes=[(h, w)],
     )[0]
 
-    # Manual filtering for older transformers versions
     keep = results["scores"] > box_threshold
-
     results = {
         "boxes": results["boxes"][keep],
         "scores": results["scores"][keep],
@@ -107,7 +143,8 @@ def detect_objects(
             "label": label.strip(),
             "score": round(float(score), 4),
             "bbox": {
-                "x": round(x1, 2), "y": round(y1, 2), "width": round(x2 - x1, 2), "height": round(y2 - y1, 2),
+                "x": round(x1, 2), "y": round(y1, 2),
+                "width": round(x2 - x1, 2), "height": round(y2 - y1, 2),
             },
         })
 
