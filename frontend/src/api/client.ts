@@ -36,7 +36,7 @@ api.interceptors.response.use(
 export async function detectObjects(
   file: File,
   prompt?: string
-): Promise<{ session_id: string; objects: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }> }> {
+): Promise<{ session_id: string; image_path: string; objects: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }> }> {
   const form = new FormData()
   form.append('file', file)
   if (prompt) form.append('prompt', prompt)

@@ -47,4 +47,4 @@ async def detect(
     logger.info(f"[detect] found {len(objects)} objects: {[o['label'] for o in objects]}")
     set_progress(session_id, "detect", 1.0, "Detection complete", done=True)
 
-    return DetectResponse(objects=objects, session_id=session_id)
+    return DetectResponse(objects=objects, session_id=session_id, image_path=str(image_path))

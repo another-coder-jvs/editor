@@ -294,7 +294,7 @@ export const Canvas: React.FC = () => {
       toast.info(`Segmenting ${detectResult.objects.length} object(s)…`)
       const segResult = await segmentObjects(
         detectResult.session_id,
-        detectResult.session_id ? `/temp/${detectResult.session_id}` : originalImagePath,
+        detectResult.image_path,
         detectResult.objects,
       )
 
@@ -332,6 +332,7 @@ export const Canvas: React.FC = () => {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && e.target === document.body) { e.preventDefault(); setSpaceHeld(true) }
+      if (e.key === 'Escape') { clearAiSelections(); clearSelection() }
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') { setSpaceHeld(false); setIsPanning(false) }
@@ -339,7 +340,7 @@ export const Canvas: React.FC = () => {
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp) }
-  }, [])
+  }, [clearAiSelections, clearSelection])
 
   // Inline text editor
   const [inlineEditor, setInlineEditor] = useState<{
@@ -470,7 +471,12 @@ export const Canvas: React.FC = () => {
           ...bgStyle,
         }}
         onClick={(e) => {
-          // Magic Select / Object Select click handler
+          // If AI selections are showing, don't trigger detection — just dismiss on bg click
+          if (aiSelections.length > 0) {
+            clearAiSelections()
+            return
+          }
+          // Magic Select / Object Select
           if (activeTool === 'magic_select') {
             e.stopPropagation()
             handleMagicSelectClick(e)
@@ -587,6 +593,21 @@ export const Canvas: React.FC = () => {
         />
       </div>
 
+      {/* Selection Action Toolbar — OUTSIDE canvas div so clicks don't trigger detection */}
+      <SelectionToolbar
+        selection={selection}
+        aiSelections={aiSelections}
+        canvasOffset={canvasOffset}
+        canvasScale={canvasScale}
+        layers={layers}
+        selectedLayerIds={selectedLayerIds}
+        pushHistory={pushHistory}
+        updateLayer={updateLayer}
+        addLayer={addLayer}
+        clearAiSelections={clearAiSelections}
+        clearSelection={clearSelection}
+      />
+
       {/* AI detecting spinner */}
       {aiDetecting && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 bg-dark-700 border border-dark-500 text-white text-xs px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
@@ -595,138 +616,111 @@ export const Canvas: React.FC = () => {
         </div>
       )}
 
-      {/* Selection Action Toolbar — appears when AI selections or geometric selection exists */}
-      <SelectionToolbar
-        selection={selection}
-        aiSelections={aiSelections}
-        aiSelectionLayerId={aiSelectionLayerId}
-        canvasScale={canvasScale}
-        layers={layers}
-        selectedLayerIds={selectedLayerIds}
-        pushHistory={pushHistory}
-        updateLayer={updateLayer}
-        deleteLayer={deleteLayer}
-        addLayer={addLayer}
-        clearAiSelections={clearAiSelections}
-        clearSelection={clearSelection}
-      />
     </div>
   )
 }
 
 // ── Selection Action Toolbar ───────────────────────────────────────────────
+// Rendered OUTSIDE the canvas div — positioned using screen-space coordinates
+// so clicks on buttons never bubble into the canvas onClick handler.
 interface SelectionToolbarProps {
   selection: SelectionMask | null
   aiSelections: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }>
-  aiSelectionLayerId: string | null
+  canvasOffset: { x: number; y: number }
   canvasScale: number
   layers: any[]
   selectedLayerIds: string[]
   pushHistory: () => void
   updateLayer: (id: string, patch: any) => void
-  deleteLayer: (id: string) => void
   addLayer: (layer: any) => void
   clearAiSelections: () => void
   clearSelection: () => void
 }
 
+function loadImage(url: string): Promise<HTMLImageElement | null> {
+  return new Promise(resolve => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => resolve(null)
+    img.src = url
+  })
+}
+
+function getLayerUrl(pngPath: string): string {
+  if (pngPath.startsWith('blob:') || pngPath.startsWith('data:')) return pngPath
+  return `${API_BASE}${pngPath}`
+}
+
 const SelectionToolbar: React.FC<SelectionToolbarProps> = ({
-  selection, aiSelections, aiSelectionLayerId, canvasScale,
-  layers, selectedLayerIds, pushHistory, updateLayer, deleteLayer, addLayer,
+  selection, aiSelections, canvasOffset, canvasScale,
+  layers, selectedLayerIds, pushHistory, updateLayer, addLayer,
   clearAiSelections, clearSelection,
 }) => {
   const hasAiSelections = aiSelections.length > 0
   const hasGeometricSelection = !!selection
-  const hasAny = hasAiSelections || hasGeometricSelection
+  if (!hasAiSelections && !hasGeometricSelection) return null
 
-  if (!hasAny) return null
+  const selectedLayer = layers.find(l =>
+    selectedLayerIds.includes(l.id) &&
+    !l.id.includes('_textpreview_') && !l.id.includes('_txt_') && !l.id.startsWith('draw_')
+  )
 
-  const selectedLayer = layers.find(l => selectedLayerIds.includes(l.id) && !l.id.includes('_textpreview_'))
+  // Convert canvas-space bbox center to screen-space (relative to container)
+  // Container is the parent: flex-1 overflow-hidden relative
+  // Canvas div is centered with: translate(calc(-50% + offsetX), calc(-50% + offsetY)) scale(scale)
+  const containerW = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const containerH = typeof window !== 'undefined' ? window.innerHeight : 800
+  const canvasCenterX = containerW / 2 + canvasOffset.x
+  const canvasCenterY = containerH / 2 + canvasOffset.y
 
-  // Calculate toolbar position — center of first selection bbox
-  let toolbarX = 100
-  let toolbarY = 100
+  let screenX = canvasCenterX
+  let screenY = canvasCenterY - 20
   if (hasAiSelections && aiSelections.length > 0) {
     const first = aiSelections[0].bbox
-    toolbarX = first.x + first.width / 2
-    toolbarY = first.y - 40
+    screenX = canvasCenterX + (first.x + first.width / 2) * canvasScale
+    screenY = canvasCenterY + first.y * canvasScale - 20
   } else if (selection?.rect) {
-    toolbarX = selection.rect.x + selection.rect.w / 2
-    toolbarY = selection.rect.y - 40
+    screenX = canvasCenterX + (selection.rect.x + selection.rect.w / 2) * canvasScale
+    screenY = canvasCenterY + selection.rect.y * canvasScale - 20
   }
-
-  // Ensure toolbar stays within canvas bounds
-  toolbarX = Math.max(80, Math.min(toolbarX, (typeof window !== 'undefined' ? window.innerWidth : 800) / canvasScale - 80))
-  toolbarY = Math.max(10, toolbarY)
+  // Clamp to viewport
+  screenX = Math.max(120, Math.min(screenX, containerW - 120))
+  screenY = Math.max(60, screenY)
 
   const handleCut = async () => {
-    if (!selectedLayer || !selectedLayer.png_path) return
+    if (!selectedLayer?.png_path) { toast.warn('Select a layer first'); return }
     pushHistory()
-
+    const img = await loadImage(getLayerUrl(selectedLayer.png_path))
+    if (!img) { toast.error('Failed to load layer image'); return }
+    const offscreen = document.createElement('canvas')
+    offscreen.width = selectedLayer.bbox.width
+    offscreen.height = selectedLayer.bbox.height
+    const ctx = offscreen.getContext('2d')!
+    ctx.drawImage(img, 0, 0)
+    const imageData = ctx.getImageData(0, 0, offscreen.width, offscreen.height)
+    const data = imageData.data
     if (hasAiSelections) {
-      // AI selection: make selected bboxes transparent
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      const url = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-        ? selectedLayer.png_path : `${API_BASE}${selectedLayer.png_path}`
-      img.src = url
-      await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve() })
-
-      const offscreen = document.createElement('canvas')
-      offscreen.width = selectedLayer.bbox.width
-      offscreen.height = selectedLayer.bbox.height
-      const ctx = offscreen.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-
-      const imageData = ctx.getImageData(0, 0, offscreen.width, offscreen.height)
-      const data = imageData.data
-
-      // Make pixels in AI selection bboxes transparent
       aiSelections.forEach(obj => {
-        const localX = obj.bbox.x - selectedLayer.bbox.x
-        const localY = obj.bbox.y - selectedLayer.bbox.y
-        const x1 = Math.max(0, Math.floor(localX))
-        const y1 = Math.max(0, Math.floor(localY))
-        const x2 = Math.min(offscreen.width, Math.ceil(localX + obj.bbox.width))
-        const y2 = Math.min(offscreen.height, Math.ceil(localY + obj.bbox.height))
-        for (let y = y1; y < y2; y++) {
-          for (let x = x1; x < x2; x++) {
-            data[(y * offscreen.width + x) * 4 + 3] = 0 // set alpha to 0
-          }
-        }
+        const lx = Math.max(0, Math.floor(obj.bbox.x - selectedLayer.bbox.x))
+        const ly = Math.max(0, Math.floor(obj.bbox.y - selectedLayer.bbox.y))
+        const rx = Math.min(offscreen.width, Math.ceil(obj.bbox.x - selectedLayer.bbox.x + obj.bbox.width))
+        const ry = Math.min(offscreen.height, Math.ceil(obj.bbox.y - selectedLayer.bbox.y + obj.bbox.height))
+        for (let y = ly; y < ry; y++) for (let x = lx; x < rx; x++) data[(y * offscreen.width + x) * 4 + 3] = 0
       })
-
       ctx.putImageData(imageData, 0, 0)
       updateLayer(selectedLayer.id, { png_path: offscreen.toDataURL('image/png') })
       clearAiSelections()
       toast.success('Cut selection')
     } else if (selection?.rect) {
-      // Geometric selection: make rect area transparent
-      const img = new Image()
-      img.crossOrigin = 'anonymous'
-      const url = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-        ? selectedLayer.png_path : `${API_BASE}${selectedLayer.png_path}`
-      img.src = url
-      await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve() })
-
-      const offscreen = document.createElement('canvas')
-      offscreen.width = selectedLayer.bbox.width
-      offscreen.height = selectedLayer.bbox.height
-      const ctx = offscreen.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-
-      const { x, y, w, h } = selection.rect!
-      const localX = Math.max(0, Math.floor(x - selectedLayer.bbox.x))
-      const localY = Math.max(0, Math.floor(y - selectedLayer.bbox.y))
-      const localW = Math.ceil(w)
-      const localH = Math.ceil(h)
-
-      const imageData = ctx.getImageData(localX, localY, localW, localH)
-      for (let i = 3; i < imageData.data.length; i += 4) {
-        imageData.data[i] = 0
-      }
-      ctx.putImageData(imageData, localX, localY)
-
+      const { x, y, w, h } = selection.rect
+      const lx = Math.max(0, Math.floor(x - selectedLayer.bbox.x))
+      const ly = Math.max(0, Math.floor(y - selectedLayer.bbox.y))
+      const lw = Math.min(offscreen.width - lx, Math.ceil(w))
+      const lh = Math.min(offscreen.height - ly, Math.ceil(h))
+      const area = ctx.getImageData(lx, ly, lw, lh)
+      for (let i = 3; i < area.data.length; i += 4) area.data[i] = 0
+      ctx.putImageData(area, lx, ly)
       updateLayer(selectedLayer.id, { png_path: offscreen.toDataURL('image/png') })
       clearSelection()
       toast.success('Cut selection')
@@ -734,213 +728,100 @@ const SelectionToolbar: React.FC<SelectionToolbarProps> = ({
   }
 
   const handleCopy = async () => {
-    if (!selectedLayer || !selectedLayer.png_path) return
+    if (!selectedLayer?.png_path) { toast.warn('Select a layer first'); return }
     pushHistory()
-
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    const url = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-      ? selectedLayer.png_path : `${API_BASE}${selectedLayer.png_path}`
-    img.src = url
-    await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve() })
-
+    const img = await loadImage(getLayerUrl(selectedLayer.png_path))
+    if (!img) { toast.error('Failed to load layer image'); return }
     const offscreen = document.createElement('canvas')
     offscreen.width = selectedLayer.bbox.width
     offscreen.height = selectedLayer.bbox.height
     const ctx = offscreen.getContext('2d')!
     ctx.drawImage(img, 0, 0)
-
+    const clip = document.createElement('canvas')
+    clip.width = selectedLayer.bbox.width
+    clip.height = selectedLayer.bbox.height
+    const clipCtx = clip.getContext('2d')!
     if (hasAiSelections) {
-      // Create a new layer with only the selected objects
-      const clipCanvas = document.createElement('canvas')
-      clipCanvas.width = selectedLayer.bbox.width
-      clipCanvas.height = selectedLayer.bbox.height
-      const clipCtx = clipCanvas.getContext('2d')!
-
       aiSelections.forEach(obj => {
-        const localX = obj.bbox.x - selectedLayer.bbox.x
-        const localY = obj.bbox.y - selectedLayer.bbox.y
-        clipCtx.drawImage(offscreen,
-          Math.floor(localX), Math.floor(localY),
-          Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height),
-          Math.floor(localX), Math.floor(localY),
-          Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height),
-        )
+        const lx = Math.floor(obj.bbox.x - selectedLayer.bbox.x)
+        const ly = Math.floor(obj.bbox.y - selectedLayer.bbox.y)
+        clipCtx.drawImage(offscreen, lx, ly, Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height), lx, ly, Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height))
       })
-
-      const newLayerId = `copy_${selectedLayer.id}_${Date.now()}`
-      addLayer({
-        ...selectedLayer,
-        id: newLayerId,
-        name: `copy:${selectedLayer.name}`,
-        png_path: clipCanvas.toDataURL('image/png')
-      })
-      toast.success('Copied selection to new layer')
     } else if (selection?.rect) {
-      const { x, y, w, h } = selection.rect!
-      const localX = Math.max(0, Math.floor(x - selectedLayer.bbox.x))
-      const localY = Math.max(0, Math.floor(y - selectedLayer.bbox.y))
-      const localW = Math.ceil(w)
-      const localH = Math.ceil(h)
-
-      const clipCanvas = document.createElement('canvas')
-      clipCanvas.width = localW
-      clipCanvas.height = localH
-      const clipCtx = clipCanvas.getContext('2d')!
-      clipCtx.drawImage(offscreen, localX, localY, localW, localH, 0, 0, localW, localH)
-
-      const newLayerId = `copy_${selectedLayer.id}_${Date.now()}`
-      addLayer({
-        ...selectedLayer,
-        id: newLayerId,
-        name: `copy:${selectedLayer.name}`,
-        png_path: clipCanvas.toDataURL('image/png'),
-        bbox: { ...selectedLayer.bbox, x: x, y: y, width: localW, height: localH },
-      })
-      toast.success('Copied selection to new layer')
+      const { x, y, w, h } = selection.rect
+      clipCtx.drawImage(offscreen, Math.floor(x - selectedLayer.bbox.x), Math.floor(y - selectedLayer.bbox.y), Math.ceil(w), Math.ceil(h), 0, 0, Math.ceil(w), Math.ceil(h))
     }
+    addLayer({ ...selectedLayer, id: `copy_${selectedLayer.id}_${Date.now()}`, name: `copy:${selectedLayer.name}`, png_path: clip.toDataURL('image/png'), z_index: selectedLayer.z_index + 1 })
+    toast.success('Copied to new layer')
   }
 
-  const handleDelete = () => {
-    if (hasAiSelections && selectedLayer) {
-      handleCut() // Cut = make transparent, then clear selection
-    } else if (selection?.rect && selectedLayer) {
-      handleCut()
-    }
-  }
-
-  const handleMoveToNewLayer = async () => {
-    if (!selectedLayer || !selectedLayer.png_path) return
+  const handleMove = async () => {
+    if (!selectedLayer?.png_path) { toast.warn('Select a layer first'); return }
     pushHistory()
-
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    const url = selectedLayer.png_path.startsWith('blob:') || selectedLayer.png_path.startsWith('data:')
-      ? selectedLayer.png_path : `${API_BASE}${selectedLayer.png_path}`
-    img.src = url
-    await new Promise<void>((resolve) => { img.onload = () => resolve(); img.onerror = () => resolve() })
-
+    const img = await loadImage(getLayerUrl(selectedLayer.png_path))
+    if (!img) { toast.error('Failed to load layer image'); return }
     const offscreen = document.createElement('canvas')
     offscreen.width = selectedLayer.bbox.width
     offscreen.height = selectedLayer.bbox.height
     const ctx = offscreen.getContext('2d')!
     ctx.drawImage(img, 0, 0)
-
+    const clip = document.createElement('canvas')
+    clip.width = selectedLayer.bbox.width
+    clip.height = selectedLayer.bbox.height
+    const clipCtx = clip.getContext('2d')!
     if (hasAiSelections) {
-      // Extract selected bboxes into a new layer
-      const clipCanvas = document.createElement('canvas')
-      clipCanvas.width = selectedLayer.bbox.width
-      clipCanvas.height = selectedLayer.bbox.height
-      const clipCtx = clipCanvas.getContext('2d')!
-
-      // Find bounding box of all selections
-      let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
       aiSelections.forEach(obj => {
-        minX = Math.min(minX, obj.bbox.x)
-        minY = Math.min(minY, obj.bbox.y)
-        maxX = Math.max(maxX, obj.bbox.x + obj.bbox.width)
-        maxY = Math.max(maxY, obj.bbox.y + obj.bbox.height)
-        const localX = obj.bbox.x - selectedLayer.bbox.x
-        const localY = obj.bbox.y - selectedLayer.bbox.y
-        clipCtx.drawImage(offscreen,
-          Math.floor(localX), Math.floor(localY),
-          Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height),
-          Math.floor(localX), Math.floor(localY),
-          Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height),
-        )
+        const lx = Math.floor(obj.bbox.x - selectedLayer.bbox.x)
+        const ly = Math.floor(obj.bbox.y - selectedLayer.bbox.y)
+        clipCtx.drawImage(offscreen, lx, ly, Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height), lx, ly, Math.ceil(obj.bbox.width), Math.ceil(obj.bbox.height))
       })
-
-      // Also cut from original
       const imageData = ctx.getImageData(0, 0, offscreen.width, offscreen.height)
       const data = imageData.data
       aiSelections.forEach(obj => {
-        const localX = obj.bbox.x - selectedLayer.bbox.x
-        const localY = obj.bbox.y - selectedLayer.bbox.y
-        const x1 = Math.max(0, Math.floor(localX))
-        const y1 = Math.max(0, Math.floor(localY))
-        const x2 = Math.min(offscreen.width, Math.ceil(localX + obj.bbox.width))
-        const y2 = Math.min(offscreen.height, Math.ceil(localY + obj.bbox.height))
-        for (let y = y1; y < y2; y++) {
-          for (let x = x1; x < x2; x++) {
-            data[(y * offscreen.width + x) * 4 + 3] = 0
-          }
-        }
+        const lx = Math.max(0, Math.floor(obj.bbox.x - selectedLayer.bbox.x))
+        const ly = Math.max(0, Math.floor(obj.bbox.y - selectedLayer.bbox.y))
+        const rx = Math.min(offscreen.width, Math.ceil(obj.bbox.x - selectedLayer.bbox.x + obj.bbox.width))
+        const ry = Math.min(offscreen.height, Math.ceil(obj.bbox.y - selectedLayer.bbox.y + obj.bbox.height))
+        for (let y = ly; y < ry; y++) for (let x = lx; x < rx; x++) data[(y * offscreen.width + x) * 4 + 3] = 0
       })
       ctx.putImageData(imageData, 0, 0)
       updateLayer(selectedLayer.id, { png_path: offscreen.toDataURL('image/png') })
-
-      const newLayerId = `moved_${selectedLayer.id}_${Date.now()}`
-      addLayer({
-        ...selectedLayer,
-        id: newLayerId,
-        name: `moved:${selectedLayer.name}`,
-        png_path: clipCanvas.toDataURL('image/png'),
-        z_index: selectedLayer.z_index + 1,
-      })
+      addLayer({ ...selectedLayer, id: `moved_${selectedLayer.id}_${Date.now()}`, name: `moved:${selectedLayer.name}`, png_path: clip.toDataURL('image/png'), z_index: selectedLayer.z_index + 1 })
       clearAiSelections()
-      toast.success('Moved selection to new layer')
+      toast.success('Moved to new layer')
     } else if (selection?.rect) {
-      const { x, y, w, h } = selection.rect!
-      const localX = Math.max(0, Math.floor(x - selectedLayer.bbox.x))
-      const localY = Math.max(0, Math.floor(y - selectedLayer.bbox.y))
-      const localW = Math.ceil(w)
-      const localH = Math.ceil(h)
-
-      // Extract clip
-      const clipCanvas = document.createElement('canvas')
-      clipCanvas.width = localW
-      clipCanvas.height = localH
-      const clipCtx = clipCanvas.getContext('2d')!
-      clipCtx.drawImage(offscreen, localX, localY, localW, localH, 0, 0, localW, localH)
-
-      // Cut from original
-      const imageData = ctx.getImageData(localX, localY, localW, localH)
-      for (let i = 3; i < imageData.data.length; i += 4) {
-        imageData.data[i] = 0
-      }
-      ctx.putImageData(imageData, localX, localY)
+      const { x, y, w, h } = selection.rect
+      const lx = Math.floor(x - selectedLayer.bbox.x)
+      const ly = Math.floor(y - selectedLayer.bbox.y)
+      clipCtx.drawImage(offscreen, lx, ly, Math.ceil(w), Math.ceil(h), 0, 0, Math.ceil(w), Math.ceil(h))
+      const area = ctx.getImageData(lx, ly, Math.ceil(w), Math.ceil(h))
+      for (let i = 3; i < area.data.length; i += 4) area.data[i] = 0
+      ctx.putImageData(area, lx, ly)
       updateLayer(selectedLayer.id, { png_path: offscreen.toDataURL('image/png') })
-
-      const newLayerId = `moved_${selectedLayer.id}_${Date.now()}`
-      addLayer({
-        ...selectedLayer,
-        id: newLayerId,
-        name: `moved:${selectedLayer.name}`,
-        png_path: clipCanvas.toDataURL('image/png'),
-        bbox: { ...selectedLayer.bbox, x, y, width: localW, height: localH },
-        z_index: selectedLayer.z_index + 1,
-      })
+      addLayer({ ...selectedLayer, id: `moved_${selectedLayer.id}_${Date.now()}`, name: `moved:${selectedLayer.name}`, png_path: clip.toDataURL('image/png'), bbox: { x, y, width: Math.ceil(w), height: Math.ceil(h) }, z_index: selectedLayer.z_index + 1 })
       clearSelection()
-      toast.success('Moved selection to new layer')
+      toast.success('Moved to new layer')
     }
   }
 
-  const btnClass = 'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors'
+  const btnClass = 'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors cursor-pointer whitespace-nowrap'
 
   return (
     <div
-      className="absolute z-30 bg-dark-700 border border-dark-500 rounded-lg shadow-xl flex items-center gap-0.5 px-1 py-1"
-      style={{
-        left: toolbarX,
-        top: Math.max(10, toolbarY),
-        transform: 'translate(-50%, -100%)',
-      }}
+      className="fixed z-[99999] bg-dark-800 border border-dark-500 rounded-xl shadow-2xl flex items-center gap-1.5 px-3 py-2"
+      style={{ left: screenX, top: screenY, transform: 'translate(-50%, -100%)' }}
     >
-      <button onClick={handleCut} title="Cut (remove from layer)"
-        className={`${btnClass} hover:bg-red-500/20 text-red-400 hover:text-red-300`}>
-        <Scissors size={13} /> Cut
+      <button onClick={handleCut} className={`${btnClass} hover:bg-red-500/20 text-red-400 hover:text-red-300`}>
+        <Scissors size={16} /> Cut
       </button>
-      <button onClick={handleCopy} title="Copy to new layer"
-        className={`${btnClass} hover:bg-blue-500/20 text-blue-400 hover:text-blue-300`}>
-        <Copy size={13} /> Copy
+      <button onClick={handleCopy} className={`${btnClass} hover:bg-blue-500/20 text-blue-400 hover:text-blue-300`}>
+        <Copy size={16} /> Copy
       </button>
-      <button onClick={handleMoveToNewLayer} title="Move to new layer"
-        className={`${btnClass} hover:bg-green-500/20 text-green-400 hover:text-green-300`}>
-        <Move size={13} /> Move
+      <button onClick={handleMove} className={`${btnClass} hover:bg-green-500/20 text-green-400 hover:text-green-300`}>
+        <Move size={16} /> Move
       </button>
-      <div className="w-px h-4 bg-dark-500 mx-0.5" />
-      <button onClick={() => { clearAiSelections(); clearSelection() }} title="Deselect"
-        className={`${btnClass} hover:bg-dark-500 text-gray-400 hover:text-white`}>
+      <div className="w-px h-6 bg-dark-500 mx-1" />
+      <button onClick={() => { clearAiSelections(); clearSelection() }} className={`${btnClass} hover:bg-dark-500 text-gray-400 hover:text-white`}>
         ✕
       </button>
     </div>

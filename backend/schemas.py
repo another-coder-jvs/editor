@@ -38,6 +38,7 @@ class DetectRequest(BaseModel):
 class DetectResponse(BaseModel):
     objects: List[Dict[str, Any]]  # [{label, bbox, score}]
     session_id: str
+    image_path: str  # path to the saved image on disk
 
 
 class SegmentRequest(BaseModel):
