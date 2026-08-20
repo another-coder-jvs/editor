@@ -259,34 +259,52 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    # ── Step 1: Get object names from BLIP + CLIP ──
-    if prompt:
-        dino_prompt = prompt
-        logger.info(f"[detection] using custom prompt: '{dino_prompt[:80]}'")
-    else:
-        blip_objects = _blip_detect(image_path)
-        clip_objects = _clip_classify(image_path)
-        merged = _merge_object_names(blip_objects, clip_objects)
+    # ── Step 1: Get object names — always run BLIP+CLIP, merge with user prompt ──
+    blip_objects = _blip_detect(image_path)
+    clip_objects = _clip_classify(image_path)
+    merged = _merge_object_names(blip_objects, clip_objects)
 
-        if not merged:
-            logger.info("[detection] both BLIP and CLIP found nothing — falling back to broad prompt")
-            dino_prompt = (
-                "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
-                "dog . cat . bird . horse . cow . sheep . elephant . bear . "
-                "tree . flower . plant . building . house . bridge . tower . fence . "
-                "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
-                "bottle . cup . bowl . plate . fork . knife . spoon . "
-                "book . laptop . phone . keyboard . monitor . television . camera . "
-                "bag . backpack . suitcase . umbrella . hat . shoe . sneaker . glasses . "
-                "door . window . stairs . sign . poster . banner . "
-                "fire hydrant . traffic light . bench . trash can . "
-                "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . "
-                "logo . icon . globe . earth . location . pin . map marker . "
-                "discount . sale . offer"
-            )
-        else:
-            dino_prompt = " . ".join(merged)
-            logger.info(f"[detection] built DINO prompt from BLIP+CLIP: '{dino_prompt}'")
+    # Parse user prompt into individual terms
+    user_terms: List[str] = []
+    if prompt:
+        # Split on commas, dots, or spaces to get individual terms
+        user_terms = [t.strip().lower() for t in re.split(r'[,\.]+', prompt) if t.strip()]
+        # If no commas/dots, split on spaces
+        if len(user_terms) <= 1:
+            user_terms = [t.strip().lower() for t in prompt.split() if t.strip()]
+        logger.info(f"[detection] user prompt terms: {user_terms}")
+
+    # Merge: user terms first (highest priority), then CLIP, then BLIP
+    all_terms: List[str] = []
+    for t in user_terms:
+        if t not in all_terms:
+            all_terms.append(t)
+    for t in clip_objects:
+        if t not in all_terms:
+            all_terms.append(t)
+    for t in blip_objects:
+        if t not in all_terms:
+            all_terms.append(t)
+
+    if all_terms:
+        dino_prompt = " . ".join(all_terms)
+        logger.info(f"[detection] final merged prompt ({len(all_terms)} terms): '{dino_prompt[:120]}'")
+    else:
+        logger.info("[detection] no terms found — falling back to broad prompt")
+        dino_prompt = (
+            "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
+            "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+            "tree . flower . plant . building . house . bridge . tower . fence . "
+            "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
+            "bottle . cup . bowl . plate . fork . knife . spoon . "
+            "book . laptop . phone . keyboard . monitor . television . camera . "
+            "bag . backpack . suitcase . umbrella . hat . shoe . sneaker . glasses . "
+            "door . window . stairs . sign . poster . banner . "
+            "fire hydrant . traffic light . bench . trash can . "
+            "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . "
+            "logo . icon . globe . earth . location . pin . map marker . "
+            "discount . sale . offer"
+        )
 
     # ── Step 2: Grounding DINO localises each object ──
     logger.info("[detection] loading Grounding DINO model…")
