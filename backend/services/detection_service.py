@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import torch
 from PIL import Image
@@ -43,13 +43,26 @@ def _get_blip():
 
 
 # Words that aren't useful as Grounding DINO object names
-_STOP_WORDS = {
+_STOP_WORDS: Set[str] = {
+    # Articles, prepositions, conjunctions
     "a", "an", "the", "and", "with", "on", "in", "at", "of", "to", "is",
-    "are", "this", "that", "there", "image", "photo", "picture", "showing",
-    "shows", "looking", "standing", "sitting", "wearing", "next", "near",
-    "front", "back", "side", "background", "against", "featuring",
-    "large", "small", "white", "black", "red", "blue", "green", "yellow",
-    "brown", "gray", "grey", "orange", "pink", "purple", "color",
+    "are", "this", "that", "there", "or", "but", "not", "for", "from",
+    # Photography/image terms
+    "image", "photo", "picture", "showing", "shows", "looking", "featuring",
+    # Positional terms
+    "standing", "sitting", "wearing", "next", "near", "front", "back",
+    "side", "top", "bottom", "left", "right", "center", "middle",
+    # Descriptive adjectives (not objects)
+    "large", "small", "big", "tiny", "tall", "short",
+    "white", "black", "red", "blue", "green", "yellow", "brown", "gray",
+    "grey", "orange", "pink", "purple", "color", "colored", "dark", "light",
+    "bright", "vibrant", "solid", "plain", "bright", "neon",
+    # Poster/design terms (not objects)
+    "background", "against", "main", "original", "digital", "modern",
+    "clean", "minimal", "simple", "abstract", "cool", "nice", "beautiful",
+    # Generic/meaningless terms
+    "call", "global", "address", "white", "black", "the", "logo",
+    "text", "font", "design", "style", "layout", "template", "poster",
 }
 
 
@@ -88,7 +101,7 @@ _clip_model = None
 
 CLIP_MODEL_NAME = "openai/clip-vit-base-patch32"
 
-# Broad set of candidate labels CLIP evaluates against the image
+# Candidate labels CLIP evaluates against the image — ONLY real objects
 _CLIP_CANDIDATES = [
     # People & animals
     "person", "man", "woman", "child", "baby",
@@ -102,33 +115,35 @@ _CLIP_CANDIDATES = [
     # Electronics
     "phone", "smartphone", "laptop", "computer", "tablet", "monitor",
     "television", "camera", "headphones", "speaker", "keyboard", "mouse",
-    "remote", "earbuds", "watch",
+    "remote", "earbuds",
     # Food & drink
     "food", "fruit", "apple", "banana", "orange", "grape", "strawberry",
     "pizza", "burger", "sandwich", "cake", "cookie", "bread",
     "coffee", "cup", "mug", "bottle", "glass", "wine glass",
     # Objects
     "book", "magazine", "newspaper", "pen", "pencil", "scissors",
-    "clock", "watch", "lamp", "chair", "table", "desk", "sofa", "bed",
+    "clock", "lamp", "chair", "table", "desk", "sofa", "bed",
     "pillow", "blanket", "towel", "mirror", "vase", "flower",
     "plant", "tree", "umbrella", "key", "coin", "ball", "toy",
-    "box", "bag", "basket", "bowl", "plate", "fork", "knife", "spoon",
+    "box", "basket", "bowl", "plate", "fork", "knife", "spoon",
     # Vehicles
     "car", "truck", "bus", "motorcycle", "bicycle", "boat", "airplane",
     "train", "helicopter", "scooter", "skateboard",
     # Buildings & structures
     "house", "building", "bridge", "tower", "fence", "door", "window",
-    "stairs", "roof", "wall", "floor",
+    "stairs", "roof", "wall",
     # Nature
     "mountain", "hill", "river", "lake", "ocean", "beach", "forest",
-    "cloud", "sun", "moon", "star", "sky", "rain", "snow",
-    # Design & graphics
-    "logo", "icon", "badge", "poster", "banner", "sign", "label",
-    "sticker", "frame", "border", "pattern", "background",
-    # Misc
-    "globe", "earth", "map", "pin", "location", "heart", "star",
-    "arrow", "circle", "triangle", "square", "text", "number",
-    "discount", "sale", "percentage", "phone icon",
+    "cloud", "sun", "moon", "star", "sky",
+    # Design elements (actual visual objects)
+    "logo", "icon", "badge", "sticker", "frame", "border",
+    "globe", "earth", "pin", "location", "heart", "arrow",
+    "circle", "triangle", "square",
+    # Specific icons that appear in posters
+    "phone icon", "map pin", "envelope", "mail",
+    "camera", "microphone", "speaker",
+    "fire", "lightning", "sparkle",
+    "star", "crown", "shield",
 ]
 
 
@@ -145,14 +160,13 @@ def _get_clip():
     return _clip_processor, _clip_model
 
 
-def _clip_classify(image_path: str, top_k: int = 30, threshold: float = 0.22) -> List[str]:
+def _clip_classify(image_path: str, top_k: int = 20, threshold: float = 0.22) -> List[str]:
     """Run CLIP zero-shot classification. Return labels above threshold, sorted by score."""
     processor, model = _get_clip()
 
     image = Image.open(image_path).convert("RGB")
     image.thumbnail((1024, 1024))
 
-    # CLIP classifies image against all candidate labels
     inputs = processor(
         text=_CLIP_CANDIDATES,
         images=image,
@@ -164,14 +178,11 @@ def _clip_classify(image_path: str, top_k: int = 30, threshold: float = 0.22) ->
     with torch.no_grad():
         outputs = model(**inputs)
 
-    # Cosine similarity → probabilities
     logits = outputs.logits_per_image[0]
     probs = logits.softmax(dim=-1).cpu().tolist()
 
-    # Pair each label with its score, sort descending
     scored = sorted(zip(_CLIP_CANDIDATES, probs), key=lambda x: x[1], reverse=True)
 
-    # Take top-k above threshold
     objects: List[str] = []
     for label, score in scored[:top_k]:
         if score >= threshold:
@@ -185,7 +196,6 @@ def _clip_classify(image_path: str, top_k: int = 30, threshold: float = 0.22) ->
 
 def _merge_object_names(blip_objects: List[str], clip_objects: List[str]) -> List[str]:
     """Merge BLIP caption words + CLIP classified labels into one deduplicated list."""
-    # CLIP labels are more reliable (trained for visual recognition), prioritize them
     merged: List[str] = []
 
     for name in clip_objects:
@@ -226,6 +236,14 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
                for k in kept):
             kept.append(obj)
     return kept
+
+
+def _is_oversized(box: Dict[str, float], img_w: int, img_h: int, threshold: float = 0.85) -> bool:
+    """Check if a bounding box covers more than threshold fraction of the image."""
+    box_area = box["width"] * box["height"]
+    img_area = img_w * img_h
+    ratio = box_area / img_area if img_area > 0 else 0
+    return ratio > threshold
 
 
 # ── Main detection pipeline ────────────────────────────────────────────────
@@ -300,13 +318,33 @@ def detect_objects(
 
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
         x1, y1, x2, y2 = box.tolist()
+        obj_box = {
+            "x": round(x1, 2), "y": round(y1, 2),
+            "width": round(x2 - x1, 2), "height": round(y2 - y1, 2),
+        }
+
+        # Skip oversized detections — these are DINO hallucinating the whole image as one object
+        if _is_oversized(obj_box, w, h):
+            logger.warning(f"[detection] skipping oversized detection: '{label}' covers {obj_box['width']:.0f}x{obj_box['height']:.0f} of {w}x{h}")
+            continue
+
+        # Clean label: if DINO returned a multi-word label, take only the first meaningful word
+        clean_label = label.strip()
+        # If label contains spaces, it's likely DINO merged multiple terms — keep first word only
+        if " " in clean_label:
+            words = clean_label.split()
+            # Pick the first word that isn't a stop word
+            for w_word in words:
+                if w_word.lower() not in _STOP_WORDS:
+                    clean_label = w_word
+                    break
+            else:
+                clean_label = words[0]
+
         objects.append({
-            "label": label.strip(),
+            "label": clean_label,
             "score": round(float(score), 4),
-            "bbox": {
-                "x": round(x1, 2), "y": round(y1, 2),
-                "width": round(x2 - x1, 2), "height": round(y2 - y1, 2),
-            },
+            "bbox": obj_box,
         })
 
     # Deduplicate overlapping boxes across all labels (IoU-based NMS)

@@ -2,15 +2,17 @@ import React, { useCallback, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { detectObjects, segmentObjects } from '../api/client'
 import { toast } from 'react-toastify'
-import { Upload, Loader2 } from 'lucide-react'
+import { Upload, Loader2, Wand2, Search } from 'lucide-react'
 
 export const ImageUploader: React.FC = () => {
   const { setSession, setLayers, setProgress } = useEditorStore()
   const [loading, setLoading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [userPrompt, setUserPrompt] = useState('')
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
   const processFile = useCallback(
-    async (file: File) => {
+    async (file: File, prompt?: string) => {
       if (!file.type.startsWith('image/')) {
         toast.error('Please upload an image file')
         return
@@ -20,7 +22,7 @@ export const ImageUploader: React.FC = () => {
 
       try {
         // 1. Detect
-        const detectResult = await detectObjects(file)
+        const detectResult = await detectObjects(file, prompt)
         const { session_id, objects } = detectResult
 
         // Get image dimensions
@@ -55,19 +57,45 @@ export const ImageUploader: React.FC = () => {
         setLoading(false)
       }
     },
-    [setSession, setLayers, setProgress]
+    [setSession, setLayers, setProgress],
   )
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files[0]
-    if (file) processFile(file)
+    if (file) {
+      setSelectedFile(file)
+      // Auto-detect on drop
+      processFile(file)
+    }
   }
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) processFile(file)
+    if (file) {
+      setSelectedFile(file)
+    }
+  }
+
+  const handleAutoDetect = () => {
+    if (!selectedFile) {
+      toast.error('Please select an image first')
+      return
+    }
+    processFile(selectedFile)
+  }
+
+  const handleManualDetect = () => {
+    if (!selectedFile) {
+      toast.error('Please select an image first')
+      return
+    }
+    if (!userPrompt.trim()) {
+      toast.error('Please enter what objects are in the image')
+      return
+    }
+    processFile(selectedFile, userPrompt.trim())
   }
 
   return (
@@ -100,6 +128,47 @@ export const ImageUploader: React.FC = () => {
           </label>
         )}
       </div>
+
+      {/* Prompt input + buttons — shown after file selected */}
+      {selectedFile && !loading && (
+        <div className="w-full max-w-md flex flex-col gap-3 px-4">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                value={userPrompt}
+                onChange={(e) => setUserPrompt(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleManualDetect() }}
+                placeholder="Describe what's in the image (e.g. sneaker, logo, text, phone icon)"
+                className="w-full bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent transition-colors"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleAutoDetect}
+              className="flex-1 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              title="Auto-detect objects using AI models"
+            >
+              <Wand2 size={14} />
+              Auto Detect
+            </button>
+            <button
+              onClick={handleManualDetect}
+              className="flex-1 flex items-center justify-center gap-2 bg-accent hover:bg-accent-hover text-white text-sm px-4 py-2 rounded-lg transition-colors"
+              title="Detect using your description"
+            >
+              <Search size={14} />
+              Detect
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 text-center">
+            <span className="text-purple-400">Auto Detect</span> — AI finds objects automatically
+            {' · '}
+            <span className="text-accent">Detect</span> — use your description
+          </p>
+        </div>
+      )}
     </div>
   )
 }
