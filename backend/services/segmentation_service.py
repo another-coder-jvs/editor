@@ -24,6 +24,49 @@ TEMP_DIR = config.TEMP_DIR
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# Text labels that EasyOCR produces — use bbox mask instead of SAM2
+_TEXT_LABELS = {
+    "text", "letters", "words", "label", "title", "subtitle",
+    "heading", "paragraph", "caption", "sentence",
+}
+
+
+def _is_text_label(label: str) -> bool:
+    """Check if a detection label looks like text content from EasyOCR."""
+    lower = label.lower().strip()
+    # If the label contains only alphanumeric/spaces and is short, it's likely text
+    # EasyOCR labels are the actual text content (e.g. "Save", "50%", "OFF")
+    # DINO labels are category names (e.g. "sneaker", "phone icon")
+    if lower in _TEXT_LABELS:
+        return True
+    # Heuristic: if label has digits or mixed case typical of OCR output
+    # and doesn't match known DINO category patterns
+    has_digit = any(c.isdigit() for c in lower)
+    has_upper = any(c.isupper() for c in label)
+    # Short labels with digits or uppercase that aren't common object names
+    if len(lower) <= 30 and (has_digit or (has_upper and lower not in _TEXT_LABELS)):
+        # Check it's not a known DINO category
+        dino_categories = {
+            "person", "car", "truck", "bus", "motorcycle", "bicycle",
+            "boat", "airplane", "train", "dog", "cat", "bird", "horse",
+            "cow", "sheep", "elephant", "bear", "tree", "flower", "plant",
+            "building", "house", "bridge", "tower", "fence", "pillow",
+            "chair", "table", "sofa", "bed", "desk", "cabinet", "shelf",
+            "lamp", "bottle", "cup", "bowl", "plate", "fork", "knife",
+            "spoon", "book", "laptop", "phone", "keyboard", "monitor",
+            "television", "camera", "bag", "backpack", "suitcase", "umbrella",
+            "hat", "shoe", "sneaker", "glasses", "door", "window", "stairs",
+            "sign", "poster", "banner", "fire hydrant", "traffic light",
+            "bench", "trash can", "clock", "mirror", "painting", "vase",
+            "ball", "helmet", "food", "mobile phone", "stone",
+            "icon", "phone icon", "globe", "earth", "location", "pin",
+            "map marker", "discount", "sale", "offer", "percentage", "logo",
+        }
+        # If it's NOT a known DINO category, treat as text
+        if lower not in dino_categories:
+            return True
+    return False
+
 
 def refine_mask(mask: np.ndarray) -> np.ndarray:
     logger.debug("[segmentation] refining mask…")
@@ -141,19 +184,27 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
         logger.debug(f"[segmentation] SAM2 box prompt: {padded_box}")
 
-        try:
-            masks, scores, _ = predictor.predict(
-                box=padded_box,
-                point_coords=point_coords,
-                point_labels=point_labels,
-                multimask_output=True,
-            )
-            best_idx  = int(np.argmax(scores))
-            raw_mask  = masks[best_idx]
-            logger.info(f"[segmentation] '{label}' → best mask score={scores[best_idx]:.4f} (of {len(scores)})")
-        except Exception as e:
-            logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
+        # For text objects detected by EasyOCR, use bbox mask directly
+        # (SAM2 often over-segments text regions)
+        is_text_object = _is_text_label(label)
+
+        if is_text_object:
+            logger.info(f"[segmentation] '{label}' is text — using bbox mask (skip SAM2)")
             raw_mask = _bbox_mask(image_np.shape[:2], bbox)
+        else:
+            try:
+                masks, scores, _ = predictor.predict(
+                    box=padded_box,
+                    point_coords=point_coords,
+                    point_labels=point_labels,
+                    multimask_output=True,
+                )
+                best_idx  = int(np.argmax(scores))
+                raw_mask  = masks[best_idx]
+                logger.info(f"[segmentation] '{label}' → best mask score={scores[best_idx]:.4f} (of {len(scores)})")
+            except Exception as e:
+                logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
+                raw_mask = _bbox_mask(image_np.shape[:2], bbox)
         refined = refine_mask(raw_mask)
 
         # Accumulate into combined mask (any pixel > 128 is "recognized")
