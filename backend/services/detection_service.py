@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT = (
     "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
-    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+    "animal . shoe . icon . logo . "
     "tree . flower . plant . "
     "building . house . bridge . tower . fence . "
     "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
@@ -28,7 +28,6 @@ DEFAULT_PROMPT = (
     "clock . mirror . painting . vase . "
     "ball . helmet . food . mobile phone . stone . "
     "icon . phone icon . globe . earth . location . pin . map marker . "
-    "logo"
 )
 
 def _iou(a: List[float], b: List[float]) -> float:
