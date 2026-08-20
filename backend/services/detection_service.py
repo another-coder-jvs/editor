@@ -23,12 +23,12 @@ DEFAULT_PROMPT = (
     "book . laptop . phone . keyboard . monitor . television . camera . "
     "bag . backpack . suitcase . umbrella . hat . shoe . sneaker . glasses . "
     "door . window . stairs . "
-    "sign . poster . banner . text . letters . words . "
+    "sign . poster . banner . "
     "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase ."
+    "clock . mirror . painting . vase . "
     "ball . helmet . food . mobile phone . stone . "
     "icon . phone icon . globe . earth . location . pin . map marker . "
-    "discount . sale . offer . percentage . logo"
+    "logo"
 )
 
 def _iou(a: List[float], b: List[float]) -> float:
@@ -57,51 +57,6 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
                for k in kept):
             kept.append(obj)
     return kept
-
-
-def _run_easyocr_text_detection(
-    image_path: str, img_w: int, img_h: int,
-) -> List[Dict[str, Any]]:
-    """Run EasyOCR on the full image to find text regions, return as object dicts."""
-    try:
-        from services.text_service import _get_reader
-        import numpy as np
-        reader = _get_reader()
-        image = Image.open(image_path).convert("RGB")
-        arr = np.array(image)
-        results = reader.readtext(arr, detail=1, paragraph=False)
-
-        text_objects: List[Dict[str, Any]] = []
-        for quad, text, conf in results:
-            if conf < 0.30 or not text.strip():
-                continue
-            quad = [[int(p[0]), int(p[1])] for p in quad]
-            xs = [p[0] for p in quad]
-            ys = [p[1] for p in quad]
-            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
-            bw = x2 - x1
-            bh = y2 - y1
-            # Skip tiny detections
-            if bw < 5 or bh < 5:
-                continue
-            # Skip detections that span more than 80% of the image (likely noise)
-            if bw > img_w * 0.8 and bh > img_h * 0.8:
-                continue
-            text_objects.append({
-                "label": text.strip(),
-                "score": round(float(conf), 4),
-                "bbox": {
-                    "x": round(x1, 2), "y": round(y1, 2),
-                    "width": round(bw, 2), "height": round(bh, 2),
-                },
-            })
-            logger.debug(f"[detection] EasyOCR text: '{text.strip()}' score={conf:.3f} bbox=({x1},{y1},{bw},{bh})")
-
-        logger.info(f"[detection] EasyOCR found {len(text_objects)} text regions")
-        return text_objects
-    except Exception as e:
-        logger.warning(f"[detection] EasyOCR text detection failed: {e}")
-        return []
 
 
 def detect_objects(
@@ -168,47 +123,5 @@ def detect_objects(
         obj["label"] = lbl if seen[lbl] == 1 else f"{lbl} {seen[lbl]}"
         logger.debug(f"[detection]   {obj['label']} score={obj['score']} bbox={obj['bbox']}")
 
-    logger.info(f"[detection] DINO objects ({len(objects)}): {[o['label'] for o in objects]}")
-
-    # ── Also run EasyOCR to catch text regions DINO may miss ──
-    text_objects = _run_easyocr_text_detection(image_path, w, h)
-
-    # Merge: remove any DINO box that is mostly contained inside an EasyOCR text box
-    # (to avoid double-segmenting the same region)
-    dino_kept: List[Dict[str, Any]] = []
-    for dino_obj in objects:
-        db = dino_obj["bbox"]
-        dino_box = [db["x"], db["y"], db["x"] + db["width"], db["y"] + db["height"]]
-        dino_area = db["width"] * db["height"]
-        dominated = False
-        for txt_obj in text_objects:
-            tb = txt_obj["bbox"]
-            txt_box = [tb["x"], tb["y"], tb["x"] + tb["width"], tb["y"] + tb["height"]]
-            # Check if DINO box center is inside an EasyOCR text box
-            cx = (dino_box[0] + dino_box[2]) / 2
-            cy = (dino_box[1] + dino_box[3]) / 2
-            if txt_box[0] <= cx <= txt_box[2] and txt_box[1] <= cy <= txt_box[3]:
-                txt_area = tb["width"] * tb["height"]
-                # Only skip DINO detection if it's a small text-like box
-                if dino_area < txt_area * 3:
-                    dominated = True
-                    logger.info(f"[detection] Skipping DINO '{dino_obj['label']}' — inside EasyOCR text '{txt_obj['label']}'")
-                    break
-        if not dominated:
-            dino_kept.append(dino_obj)
-
-    # Combine DINO objects + EasyOCR text objects
-    all_objects = dino_kept + text_objects
-
-    # Final NMS across all
-    all_objects = _nms(all_objects, iou_threshold=0.5)
-
-    # Re-number labels
-    seen = {}
-    for obj in all_objects:
-        lbl = obj["label"]
-        seen[lbl] = seen.get(lbl, 0) + 1
-        obj["label"] = lbl if seen[lbl] == 1 else f"{lbl} {seen[lbl]}"
-
-    logger.info(f"[detection] final objects ({len(all_objects)}): {[o['label'] for o in all_objects]}")
-    return all_objects
+    logger.info(f"[detection] final objects ({len(objects)}): {[o['label'] for o in objects]}")
+    return objects

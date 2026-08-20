@@ -1,5 +1,6 @@
 """
 Segmentation service – SAM2 masks + refinement + transparent PNG layers.
+Detected objects are erased from the background (main) layer via inpainting.
 """
 from __future__ import annotations
 
@@ -15,92 +16,37 @@ from PIL import Image
 
 from services.model_manager import model_manager
 from schemas import BoundingBox, LayerData
- 
+
 from utils import config
 logger = logging.getLogger(__name__)
 
-# TEMP_DIR = Path(__file__).resolve().parents[2] / "temp"
 TEMP_DIR = config.TEMP_DIR
-
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
-
-# Text labels that EasyOCR produces — use bbox mask instead of SAM2
-_TEXT_LABELS = {
-    "text", "letters", "words", "label", "title", "subtitle",
-    "heading", "paragraph", "caption", "sentence",
-}
-
-
-def _is_text_label(label: str) -> bool:
-    """Check if a detection label looks like text content from EasyOCR."""
-    lower = label.lower().strip()
-    # If the label contains only alphanumeric/spaces and is short, it's likely text
-    # EasyOCR labels are the actual text content (e.g. "Save", "50%", "OFF")
-    # DINO labels are category names (e.g. "sneaker", "phone icon")
-    if lower in _TEXT_LABELS:
-        return True
-    # Heuristic: if label has digits or mixed case typical of OCR output
-    # and doesn't match known DINO category patterns
-    has_digit = any(c.isdigit() for c in lower)
-    has_upper = any(c.isupper() for c in label)
-    # Short labels with digits or uppercase that aren't common object names
-    if len(lower) <= 30 and (has_digit or (has_upper and lower not in _TEXT_LABELS)):
-        # Check it's not a known DINO category
-        dino_categories = {
-            "person", "car", "truck", "bus", "motorcycle", "bicycle",
-            "boat", "airplane", "train", "dog", "cat", "bird", "horse",
-            "cow", "sheep", "elephant", "bear", "tree", "flower", "plant",
-            "building", "house", "bridge", "tower", "fence", "pillow",
-            "chair", "table", "sofa", "bed", "desk", "cabinet", "shelf",
-            "lamp", "bottle", "cup", "bowl", "plate", "fork", "knife",
-            "spoon", "book", "laptop", "phone", "keyboard", "monitor",
-            "television", "camera", "bag", "backpack", "suitcase", "umbrella",
-            "hat", "shoe", "sneaker", "glasses", "door", "window", "stairs",
-            "sign", "poster", "banner", "fire hydrant", "traffic light",
-            "bench", "trash can", "clock", "mirror", "painting", "vase",
-            "ball", "helmet", "food", "mobile phone", "stone",
-            "icon", "phone icon", "globe", "earth", "location", "pin",
-            "map marker", "discount", "sale", "offer", "percentage", "logo",
-        }
-        # If it's NOT a known DINO category, treat as text
-        if lower not in dino_categories:
-            return True
-    return False
 
 
 def refine_mask(mask: np.ndarray) -> np.ndarray:
     logger.debug("[segmentation] refining mask…")
     mask = mask.astype(np.uint8) * 255
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    # Close small holes
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-    # Flood-fill interior holes
     flood = mask.copy()
     h, w = flood.shape
     flood_fill_mask = np.zeros((h + 2, w + 2), np.uint8)
     cv2.floodFill(flood, flood_fill_mask, (0, 0), 255)
     mask = mask | cv2.bitwise_not(flood)
-    # Remove isolated noise
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # --- Edge feathering via alpha matting ---
-    # Erode to get definite foreground, dilate to get definite background boundary
     fg_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    eroded  = cv2.erode(mask,  fg_kernel, iterations=2)   # certain foreground
-    dilated = cv2.dilate(mask, fg_kernel, iterations=2)   # certain background boundary
-
-    # Transition zone = pixels between eroded and dilated
+    eroded  = cv2.erode(mask,  fg_kernel, iterations=2)
+    dilated = cv2.dilate(mask, fg_kernel, iterations=2)
     transition = (dilated > 128) & (eroded < 128)
 
-    # In the transition zone, use distance-based smooth alpha
     dist_fg = cv2.distanceTransform((mask > 128).astype(np.uint8), cv2.DIST_L2, 5)
     dist_bg = cv2.distanceTransform((mask < 128).astype(np.uint8), cv2.DIST_L2, 5)
-    smooth = dist_fg / (dist_fg + dist_bg + 1e-6)  # 0..1 gradient across edge
+    smooth = dist_fg / (dist_fg + dist_bg + 1e-6)
 
     result = mask.copy().astype(np.float32)
     result[transition] = smooth[transition] * 255.0
-
-    # Final light blur only on the transition band to remove staircase artifacts
     blurred = cv2.GaussianBlur(result, (3, 3), 0)
     result[transition] = blurred[transition]
 
@@ -110,7 +56,6 @@ def refine_mask(mask: np.ndarray) -> np.ndarray:
 
 def mask_to_transparent_png(image: np.ndarray, mask: np.ndarray, bbox: Dict[str, float], out_path: Path) -> None:
     img_h, img_w = image.shape[:2]
-    # Expand crop by feather radius so soft edge pixels aren't clipped
     FEATHER_PAD = 8
     x1 = max(0, int(bbox["x"]) - FEATHER_PAD)
     y1 = max(0, int(bbox["y"]) - FEATHER_PAD)
@@ -124,6 +69,30 @@ def mask_to_transparent_png(image: np.ndarray, mask: np.ndarray, bbox: Dict[str,
     logger.debug(f"[segmentation] saved transparent PNG → {out_path}")
 
 
+def _inpaint_erased_background(
+    image_np: np.ndarray, combined_mask: np.ndarray,
+) -> np.ndarray:
+    """
+    Inpaint (erase) all detected object regions from the full image.
+    Returns an RGBA image where detected objects are replaced with
+    inpainted background, and the alpha is 255 everywhere.
+    """
+    logger.info("[segmentation] inpainting detected objects from background…")
+    # Dilate mask slightly so inpaint covers feathered edges
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    inpaint_mask = cv2.dilate(combined_mask, kernel, iterations=2)
+
+    # Use TELEA inpaint for fast, clean fill
+    inpainted = cv2.inpaint(image_np, inpaint_mask, inpaintRadius=10, flags=cv2.INPAINT_TELEA)
+    # Second pass with NS for smoother result
+    inpainted = cv2.inpaint(inpainted, inpaint_mask, inpaintRadius=6, flags=cv2.INPAINT_NS)
+
+    result = cv2.cvtColor(inpainted, cv2.COLOR_RGB2RGBA)
+    result[:, :, 3] = 255  # full alpha — this is the clean background
+    logger.info("[segmentation] background inpainted")
+    return result
+
+
 def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, Any]]) -> List[LayerData]:
     logger.info(f"[segmentation] session={session_id} objects={len(objects)} image={image_path}")
 
@@ -133,9 +102,8 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     logger.info(f"[segmentation] opening image: {image_path}")
     image_path = str(image_path).lstrip("/temp")
 
-    # Build path relative to project root
     p = (TEMP_DIR / image_path).resolve()
- 
+
     logger.info(f"RAW={image_path}")
     logger.info(f"FINAL={p} exists={p.exists()}")
 
@@ -154,11 +122,9 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     session_dir.mkdir(parents=True, exist_ok=True)
 
     layers: List[LayerData] = []
-    # Accumulate all refined masks to compute the unrecognized remainder
     img_h, img_w = image_np.shape[:2]
     combined_mask = np.zeros((img_h, img_w), dtype=np.uint8)
 
-    # Sanitize label for use in filename
     def safe_label(lbl: str) -> str:
         return "".join(c if c.isalnum() or c in "-_" else "_" for c in lbl.strip())
 
@@ -169,45 +135,34 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
         box = np.array([bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]])
 
-        # Pad the box slightly so SAM2 has context around the object
         pad = max(10, int(min(bbox["width"], bbox["height"]) * 0.05))
         padded_box = np.array([
             max(0, box[0] - pad), max(0, box[1] - pad),
             min(img_w, box[2] + pad), min(img_h, box[3] + pad),
         ])
 
-        # Center point prompt — guides SAM2 toward the object interior
         cx = (padded_box[0] + padded_box[2]) / 2
         cy = (padded_box[1] + padded_box[3]) / 2
         point_coords = np.array([[cx, cy]])
-        point_labels = np.array([1])  # 1 = foreground
+        point_labels = np.array([1])
 
         logger.debug(f"[segmentation] SAM2 box prompt: {padded_box}")
 
-        # For text objects detected by EasyOCR, use bbox mask directly
-        # (SAM2 often over-segments text regions)
-        is_text_object = _is_text_label(label)
-
-        if is_text_object:
-            logger.info(f"[segmentation] '{label}' is text — using bbox mask (skip SAM2)")
+        try:
+            masks, scores, _ = predictor.predict(
+                box=padded_box,
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=True,
+            )
+            best_idx  = int(np.argmax(scores))
+            raw_mask  = masks[best_idx]
+            logger.info(f"[segmentation] '{label}' → best mask score={scores[best_idx]:.4f} (of {len(scores)})")
+        except Exception as e:
+            logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
             raw_mask = _bbox_mask(image_np.shape[:2], bbox)
-        else:
-            try:
-                masks, scores, _ = predictor.predict(
-                    box=padded_box,
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                    multimask_output=True,
-                )
-                best_idx  = int(np.argmax(scores))
-                raw_mask  = masks[best_idx]
-                logger.info(f"[segmentation] '{label}' → best mask score={scores[best_idx]:.4f} (of {len(scores)})")
-            except Exception as e:
-                logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
-                raw_mask = _bbox_mask(image_np.shape[:2], bbox)
         refined = refine_mask(raw_mask)
 
-        # Accumulate into combined mask (any pixel > 128 is "recognized")
         combined_mask = np.maximum(combined_mask, (refined > 128).astype(np.uint8) * 255)
 
         layer_id = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
@@ -227,7 +182,6 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         mask_url = f"/temp/{session_id}/{mask_name}"
         png_url  = f"/temp/{session_id}/{png_name}"
 
-        # Bbox must match the expanded crop used in mask_to_transparent_png (FEATHER_PAD=8)
         FP = 8
         expanded_bbox = {
             "x":      float(max(0,      int(bbox["x"]) - FP)),
@@ -249,48 +203,37 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
 
-    # --- Unrecognized remainder layer (0% data loss) ---
-    remainder_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
-
-    # Remove tiny disconnected blobs (shadow noise, compression artifacts)
-    # Keep only connected components larger than 0.5% of total image area
-    min_area = int(img_h * img_w * 0.005)
-    num_labels, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
-        (remainder_mask > 128).astype(np.uint8), connectivity=8
-    )
-    clean_remainder = np.zeros_like(remainder_mask)
-    for cc_idx in range(1, num_labels):  # skip background (0)
-        if stats[cc_idx, cv2.CC_STAT_AREA] >= min_area:
-            clean_remainder[cc_labels == cc_idx] = 255
-
-    remainder_pixel_count = int(np.sum(clean_remainder > 0))
-    logger.info(f"[segmentation] remainder pixels after noise removal: {remainder_pixel_count}")
+    # --- Background (main) layer: inpainted version with detected objects erased ---
+    remainder_pixel_count = int(np.sum(combined_mask > 0))
+    logger.info(f"[segmentation] combined object mask pixels: {remainder_pixel_count}")
 
     if remainder_pixel_count > 0:
         layer_id   = f"{session_id}_remainder_{uuid.uuid4().hex[:6]}"
-        mask_name  = f"{layer_id}_unrecognized_mask.png"
-        png_name   = f"{layer_id}_unrecognized_layer.png"
+        mask_name  = f"{layer_id}_background_mask.png"
+        png_name   = f"{layer_id}_background_layer.png"
         mask_file  = session_dir / mask_name
         png_file   = session_dir / png_name
 
-        Image.fromarray(clean_remainder).save(str(mask_file))
+        # Inpaint: erase all detected objects from the full image
+        background_rgba = _inpaint_erased_background(image_np, combined_mask)
+        Image.fromarray(background_rgba).save(str(png_file), optimize=False)
 
-        rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
-        rgba[:, :, 3] = clean_remainder
-        Image.fromarray(rgba).save(str(png_file), optimize=False)
+        # Background mask = everything NOT covered by any object
+        bg_mask = cv2.bitwise_not(combined_mask)
+        Image.fromarray(bg_mask).save(str(mask_file))
 
         full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
         layers.append(LayerData(
             id=layer_id,
-            name="unrecognized",
+            name="background",
             mask_path=f"/temp/{session_id}/{mask_name}",
             png_path=f"/temp/{session_id}/{png_name}",
             bbox=BoundingBox(**full_bbox),
-            z_index=0,  # bottom layer
+            z_index=0,
             visible=True,
             opacity=1.0,
         ))
-        logger.info(f"[segmentation] unrecognized remainder layer created")
+        logger.info("[segmentation] background layer created (objects erased via inpainting)")
 
     # Save session metadata for cache restore
     meta = {
