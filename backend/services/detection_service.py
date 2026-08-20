@@ -1,9 +1,11 @@
 """
-Detection service – YOLO pre-detects object names, Grounding DINO localises them.
+Detection service – BLIP captions the image to find object names,
+then Grounding DINO localises them with bounding boxes.
 """
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -13,95 +15,70 @@ from services.model_manager import model_manager, DEVICE
 
 logger = logging.getLogger(__name__)
 
-# ── YOLO pre-detector ──────────────────────────────────────────────────────
-_yolo_model = None
+# ── BLIP pre-detector ─────────────────────────────────────────────────────
+_blip_processor = None
+_blip_model = None
+
+BLIP_MODEL_NAME = "Salesforce/blip-image-captioning-base"
 
 
-def _get_yolo():
-    global _yolo_model
-    if _yolo_model is None:
+def _get_blip():
+    global _blip_processor, _blip_model
+    if _blip_processor is None:
         import os
-        os.environ["MPLBACKEND"] = "Agg"  # avoid Colab matplotlib backend error
-        from ultralytics import YOLO
-        logger.info("[detection] loading YOLOv8 model…")
-        _yolo_model = YOLO("yolov8m.pt")
-        logger.info("[detection] YOLOv8 ready")
-    return _yolo_model
+        os.environ["MPLBACKEND"] = "Agg"
+        from transformers import BlipProcessor, BlipForConditionalGeneration
+
+        logger.info("[detection] loading BLIP model…")
+        _blip_processor = BlipProcessor.from_pretrained(BLIP_MODEL_NAME)
+        _blip_model = BlipForConditionalGeneration.from_pretrained(
+            BLIP_MODEL_NAME,
+            torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
+        ).to(DEVICE)
+        _blip_model.eval()
+        logger.info("[detection] BLIP model ready")
+    return _blip_processor, _blip_model
 
 
-# YOLO COCO class names → expanded DINO-friendly synonyms
-_CLASS_MAP = {
-    "sneaker": "sneaker . shoe . footwear",
-    "shoe": "shoe . sneaker . footwear",
-    "handbag": "handbag . bag . purse",
-    "backpack": "backpack . bag",
-    "tie": "tie . necktie",
-    "suitcase": "suitcase . luggage . bag",
-    "bottle": "bottle . water bottle",
-    "cup": "cup . mug . glass",
-    "bowl": "bowl . dish",
-    "chair": "chair . seat",
-    "couch": "couch . sofa",
-    "potted plant": "plant . flower pot",
-    "bed": "bed",
-    "dining table": "table . desk",
-    "toilet": "toilet",
-    "tv": "television . tv . screen . monitor",
-    "laptop": "laptop . computer",
-    "cell phone": "phone . mobile phone . smartphone",
-    "mouse": "mouse",
-    "remote": "remote control",
-    "keyboard": "keyboard",
-    "book": "book . magazine",
-    "clock": "clock . watch",
-    "vase": "vase",
-    "scissors": "scissors",
-    "teddy bear": "teddy bear . stuffed animal",
-    "hair drier": "hair dryer",
-    "toothbrush": "toothbrush",
+# Words that aren't useful as Grounding DINO object names
+_STOP_WORDS = {
+    "a", "an", "the", "and", "with", "on", "in", "at", "of", "to", "is",
+    "are", "this", "that", "there", "image", "photo", "picture", "showing",
+    "shows", "looking", "standing", "sitting", "wearing", "next", "near",
+    "front", "back", "side", "background", "against", "featuring",
+    "large", "small", "white", "black", "red", "blue", "green", "yellow",
+    "brown", "gray", "grey", "orange", "pink", "purple", "color",
 }
 
 
-# Extra terms to always include — catches objects YOLO can't detect (logos, icons, etc.)
-_ALWAYS_INCLUDE = (
-    "logo . icon . banner . poster . sign . label . badge . "
-    "globe . earth . phone icon . location . pin . map marker . "
-    "discount . sale . offer"
-)
+def _blip_detect(image_path: str) -> List[str]:
+    """Caption the image with BLIP, extract object names from the caption."""
+    processor, model = _get_blip()
 
+    image = Image.open(image_path).convert("RGB")
+    image.thumbnail((1024, 1024))
 
-def _yolo_detect(image_path: str, conf: float = 0.15) -> List[str]:
-    """Run YOLO on the image, return expanded DINO-friendly terms."""
-    yolo = _get_yolo()
-    results = yolo(image_path, conf=conf, verbose=False)
-    raw_names: List[str] = []
-    for r in results:
-        for cls_id in r.boxes.cls.tolist():
-            name = yolo.names[int(cls_id)]
-            if name not in raw_names:
-                raw_names.append(name)
+    inputs = processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
 
-    # Expand each YOLO class into DINO-friendly synonyms
-    expanded: List[str] = []
-    for name in raw_names:
-        mapping = _CLASS_MAP.get(name)
-        if mapping:
-            for term in mapping.split(" . "):
-                term = term.strip()
-                if term and term not in expanded:
-                    expanded.append(term)
-        else:
-            if name not in expanded:
-                expanded.append(name)
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=80, num_beams=3)
 
-    # Always append extra terms YOLO can't detect
-    for term in _ALWAYS_INCLUDE.split(" . "):
-        term = term.strip()
-        if term and term not in expanded:
-            expanded.append(term)
+    caption = processor.decode(output[0], skip_special_tokens=True)
+    logger.info(f"[detection] BLIP caption: '{caption}'")
 
-    logger.info(f"[detection] YOLO raw classes: {raw_names} → expanded ({len(expanded)}): {expanded}")
-    return expanded
+    # Extract words from caption
+    words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9_-]*\b", caption.lower())
+
+    objects: List[str] = []
+    for word in words:
+        if word in _STOP_WORDS:
+            continue
+        if word not in objects:
+            objects.append(word)
+
+    logger.info(f"[detection] extracted {len(objects)} object names: {objects}")
+    return objects
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -145,15 +122,15 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    # ── Step 1: YOLO finds what objects exist in the image ──
+    # ── Step 1: BLIP captions the image → extract object names → build DINO prompt ──
     if prompt:
-        # User supplied a custom prompt — skip YOLO, use it directly
+        # User supplied a custom prompt — use it directly
         dino_prompt = prompt
         logger.info(f"[detection] using custom prompt: '{dino_prompt[:80]}'")
     else:
-        yolo_classes = _yolo_detect(image_path)
-        if not yolo_classes:
-            logger.info("[detection] YOLO found nothing — falling back to broad prompt")
+        blip_objects = _blip_detect(image_path)
+        if not blip_objects:
+            logger.info("[detection] BLIP found nothing — falling back to broad prompt")
             dino_prompt = (
                 "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
                 "dog . cat . bird . horse . cow . sheep . elephant . bear . "
@@ -165,14 +142,12 @@ def detect_objects(
                 "door . window . stairs . sign . poster . banner . "
                 "fire hydrant . traffic light . bench . trash can . "
                 "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . "
-                "logo . icon . banner . poster . sign . label . badge . "
-                "globe . earth . phone icon . location . pin . map marker . "
+                "logo . icon . globe . earth . location . pin . map marker . "
                 "discount . sale . offer"
             )
         else:
-            # Build DINO prompt from YOLO class names
-            dino_prompt = " . ".join(yolo_classes)
-            logger.info(f"[detection] built DINO prompt from YOLO: '{dino_prompt}'")
+            dino_prompt = " . ".join(blip_objects)
+            logger.info(f"[detection] built DINO prompt from BLIP: '{dino_prompt}'")
 
     # ── Step 2: Grounding DINO localises each object ──
     logger.info("[detection] loading Grounding DINO model…")
