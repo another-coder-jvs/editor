@@ -120,14 +120,17 @@ def identify_objects(image_path: str) -> str:
             {
                 "role": "user",
                 "content": (
-                    "List the physical objects in this image as comma-separated names.\n"
+                    "Identify the distinct physical objects in this image.\n\n"
+                    "Output format: single-word labels separated by commas.\n"
+                    "Example output: shoe, chair, lamp, bottle\n\n"
                     "Rules:\n"
-                    "- Only tangible objects (shoe, car, chair, bottle, person)\n"
-                    "- Skip all text, letters, words, typography, logos\n"
-                    "- Skip abstract things (art, design, poster, flyer, background)\n"
-                    "- No duplicates or synonyms (e.g. shoe=footwear=sneaker, pick one)\n"
-                    "- Short common English names only\n"
-                    "- Nothing else, just the comma-separated list"
+                    "- Each object gets exactly one word\n"
+                    "- Use the most specific common name (sneaker → shoe, sofa → couch)\n"
+                    "- Do not include: text, letters, numbers, words written on objects\n"
+                    "- Do not include: background, wall, floor, ceiling, sky\n"
+                    "- Do not include: parts of objects (handle, leg, wheel, button)\n"
+                    "- Do not include: colors, textures, patterns, shadows\n"
+                    "- Maximum 10 objects, most prominent first"
                 ),
                 "images": [img_b64],
             }
