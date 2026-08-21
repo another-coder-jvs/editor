@@ -107,6 +107,13 @@ def _execute_single_edit(
     edit_type = edit_type_override or "other"
     edit_params = edit_params_override or {}
 
+    # Force adequate strength for generative edits — too low = no visible change
+    GEN_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
+    if edit_type in GEN_TYPES:
+        if strength < 0.6:
+            logger.info(f"[editing] boosting strength from {strength} to 0.75 for generative edit")
+            strength = 0.75
+
     GENERATIVE_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
     if edit_type == "style_transfer" and "color" in edit_params:

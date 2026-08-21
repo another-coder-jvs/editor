@@ -132,8 +132,13 @@ def parse_edit_prompt(user_prompt: str, layer_name: str) -> Dict[str, Any]:
 
 
 def _normalize_edit(edit: Dict[str, Any], user_prompt: str) -> None:
-    """Normalize a single edit dict: fix color words, add inpaint_prompt for 'other' type, etc."""
+    """Normalize a single edit dict: fix color words, map invalid types, force correct inpaint_prompt."""
     color_words = ["red","blue","green","black","white","yellow","orange","purple","pink","brown","gray","grey","navy","royal blue","teal","cyan","magenta","violet","indigo"]
+    
+    # Map LLM-invented edit types to valid ones
+    edit_type = edit.get("edit_type", "other")
+    if edit_type in ("add", "draw", "paint", "create", "insert", "place", "put"):
+        edit["edit_type"] = "other"
     
     if edit.get("edit_type") not in ("recolor",):
         for c in color_words:
@@ -142,14 +147,17 @@ def _normalize_edit(edit: Dict[str, Any], user_prompt: str) -> None:
                 edit.setdefault("edit_params", {})["color"] = edit.get("edit_params", {}).get("color", c)
                 break
     
-    # For 'other' type, ensure inpaint_prompt is set
-    if edit.get("edit_type") == "other" and not edit.get("inpaint_prompt"):
+    # Always force the FULL original user prompt as inpaint_prompt for generative types
+    # The LLM often truncates or hallucinates the prompt
+    GEN_TYPES = {"other", "replace", "generative_fill", "anime", "oil_painting", "style_transfer", "add"}
+    if edit.get("edit_type") in GEN_TYPES:
+        edit["inpaint_prompt"] = user_prompt
+    elif not edit.get("inpaint_prompt"):
         edit["inpaint_prompt"] = user_prompt
     
     edit.setdefault("target_object", "")
     edit.setdefault("target_region", "whole")
     edit.setdefault("edit_params", {})
-    edit.setdefault("inpaint_prompt", user_prompt)
 
 
 def _split_and_parse_compound(
@@ -187,8 +195,9 @@ def _heuristic_parse(prompt: str, layer_name: str) -> Dict[str, Any]:
             edit_params["color"] = color_aliases.get(color, color)
             break
 
-    # Check for 'add' operations (generative fill / other)
-    if any(w in p for w in ["add ", "draw ", "paint ", "create ", "insert ", "place ", "put "]):
+    # Check for 'add' operations (generative fill / other) — must come BEFORE color check
+    # because "add flower" contains no color but should be inpaint, not other
+    if any(w in p for w in ["add ", "draw ", "paint ", "create ", "insert ", "place ", "put ", "put on ", "apply ", "overlay "]):
         edit_type = "other"  # Will use inpainting
     elif any(w in p for w in ["replace", "change to", "convert", "swap"]):
         edit_type = "replace"
