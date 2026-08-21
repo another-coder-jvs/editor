@@ -63,7 +63,7 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
 # Synonyms map — merge common duplicates into one canonical name
 SYNONYM_MAP = {
     "sneaker": "shoe", "footwear": "shoe", "sneakers": "shoe", "boots": "shoe",
-    "footwear": "shoe", "heel": "shoe", "sandal": "shoe",
+    "heel": "shoe", "sandal": "shoe",
     "vehicle": "car", "automobile": "car", "sedan": "car", "suv": "car",
     "canine": "dog", "puppy": "dog",
     "feline": "cat", "kitten": "cat",
@@ -81,16 +81,31 @@ SYNONYM_MAP = {
     "building": "building", "house": "building", "structure": "building",
     "tree": "tree", "plant": "plant",
     "flower": "flower", "blossom": "flower",
-    "pillow": "pillow", "cushion": "pillow",
+    "pillow": "pillow", "cushion": "pillow", "pillowcase": "pillow",
     "poster": "poster", "flyer": "poster", "billboard": "poster",
     "sign": "sign", "signboard": "sign",
     "window": "window", "door": "door",
     "hat": "hat", "cap": "hat", "helmet": "hat",
-    "book": "book", "notebook": "book",
+    "book": "book",
     "clock": "clock", "watch": "clock",
     "mirror": "mirror",
     "vase": "vase",
     "lamp": "lamp", "light": "lamp", "lantern": "lamp",
+    "floor": "floor", "carpet": "floor", "rug": "floor",
+    "wall": "wall", "wallpaper": "wall",
+    "table": "table", "desk": "table",
+}
+
+# Words to always skip (text-related, abstract, hallucinated)
+SKIP_WORDS = {
+    "letter", "letters", "number", "numbers", "alphabet", "text",
+    "word", "words", "font", "type", "typography", "logo",
+    "watermark", "caption", "title", "heading", "label",
+    "background", "foreground", "shadow", "reflection",
+    "image", "photo", "picture", "scene", "view",
+    "design", "pattern", "texture", "color", "colour",
+    "stand", "hook", "hanger", "clip", "magnet", "tape",
+    "adhesive", "dispenser", "frame",
 }
 
 
@@ -115,6 +130,12 @@ def _clean_ollama_prompt(raw: str) -> str:
     for item in items:
         item = re.sub(r'[^a-zA-Z0-9\s\-]', '', item).strip().lower()
         if not item or len(item) < 2:
+            continue
+        # Skip multi-word items (likely hallucinated)
+        if ' ' in item:
+            continue
+        # Skip known bad words
+        if item in SKIP_WORDS:
             continue
         # Map synonyms
         canonical = SYNONYM_MAP.get(item, item)
