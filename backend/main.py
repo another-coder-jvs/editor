@@ -27,7 +27,7 @@ logger.info(f"Imported : CORSMiddleware !")
 from fastapi.staticfiles import StaticFiles
 logger.info(f"Imported : StaticFiles !")
 
-from routers import detect, segment, layers, edit, merge, project, export, progress, session, text, inpaint_bg, identify, redetect, upload
+from routers import detect, segment, layers, edit, merge, project, export, progress, session, text, inpaint_bg, identify, redetect
 from services.model_manager import ModelManager
 from utils import config
 logger.info("Files imported !")
@@ -66,7 +66,6 @@ def preflight_handler():
         "Access-Control-Allow-Headers": "*",
     })
 
-app.include_router(upload.router, prefix="/upload", tags=["upload"])
 app.include_router(detect.router, prefix="/detect", tags=["detect"])
 app.include_router(segment.router, prefix="/segment", tags=["segment"])
 app.include_router(layers.router, prefix="/layers", tags=["layers"])

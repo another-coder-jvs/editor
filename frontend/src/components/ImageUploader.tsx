@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
-import { uploadFile, redetectObjects, segmentObjects } from '../api/client'
+import { detectObjects, segmentObjects } from '../api/client'
 import { toast } from 'react-toastify'
 import { Upload, Loader2 } from 'lucide-react'
 import { DetectionModeSelector } from './DetectionModeSelector'
@@ -10,34 +10,28 @@ export const ImageUploader: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
 
-  // Two-step flow state
+  // Hold the file until user picks a detection mode
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [pendingImageUrl, setPendingImageUrl] = useState<string | null>(null)
-  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
-  const [pendingImagePath, setPendingImagePath] = useState<string | null>(null)
 
   const processWithPrompt = useCallback(
     async (prompt: string) => {
-      if (!pendingSessionId || !pendingImagePath || !pendingImageUrl) return
+      if (!pendingFile) return
       setLoading(true)
-      setProgress({ session_id: pendingSessionId, task: 'detect', progress: 0.1, message: 'Detecting objects…', done: false })
+      setProgress({ session_id: '', task: 'detect', progress: 0.1, message: 'Detecting objects…', done: false })
 
       try {
-        // Re-detect with the chosen prompt using existing session
-        const detectResult = await redetectObjects(
-          pendingSessionId,
-          pendingImagePath,
-          prompt || undefined,  // empty = backend uses fallback
-        )
+        // Send file + prompt to /detect (original endpoint)
+        const detectResult = await detectObjects(pendingFile, prompt || undefined)
         const { session_id, objects, image_path } = detectResult
 
         // Get image dimensions
-        const dims = await getImageDimensions(pendingImageUrl)
+        const dims = await getImageDimensions(pendingImageUrl!)
 
         setSession(
           session_id,
-          image_path || pendingImagePath,
-          pendingImageUrl,
+          image_path,
+          pendingImageUrl!,
           dims.width,
           dims.height,
         )
@@ -47,7 +41,7 @@ export const ImageUploader: React.FC = () => {
         // Segment
         const segResult = await segmentObjects(
           session_id,
-          image_path || pendingImagePath,
+          image_path,
           objects,
         )
 
@@ -58,8 +52,6 @@ export const ImageUploader: React.FC = () => {
         // Clear pending state
         setPendingFile(null)
         setPendingImageUrl(null)
-        setPendingSessionId(null)
-        setPendingImagePath(null)
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Processing failed'
         toast.error(msg)
@@ -68,34 +60,18 @@ export const ImageUploader: React.FC = () => {
         setLoading(false)
       }
     },
-    [pendingSessionId, pendingImagePath, pendingImageUrl, setSession, setLayers, setProgress],
+    [pendingFile, pendingImageUrl, setSession, setLayers, setProgress],
   )
 
-  const handleFileUpload = useCallback(
-    async (file: File) => {
+  const handleFileSelect = useCallback(
+    (file: File) => {
       if (!file.type.startsWith('image/')) {
         toast.error('Please upload an image file')
         return
       }
-      setLoading(true)
-
-      try {
-        // Upload only — NO detection yet
-        const result = await uploadFile(file)
-        const { session_id, image_path } = result
-
-        const url = URL.createObjectURL(file)
-
-        setPendingFile(file)
-        setPendingImageUrl(url)
-        setPendingSessionId(session_id)
-        setPendingImagePath(image_path)
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Upload failed'
-        toast.error(msg)
-      } finally {
-        setLoading(false)
-      }
+      const url = URL.createObjectURL(file)
+      setPendingFile(file)
+      setPendingImageUrl(url)
     },
     [],
   )
@@ -104,15 +80,15 @@ export const ImageUploader: React.FC = () => {
     e.preventDefault()
     setDragOver(false)
     const file = e.dataTransfer.files[0]
-    if (file) handleFileUpload(file)
+    if (file) handleFileSelect(file)
   }
 
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) handleFileUpload(file)
+    if (file) handleFileSelect(file)
   }
 
-  // Show detection mode selector after upload
+  // Show detection mode selector after file is selected
   if (pendingImageUrl) {
     return (
       <DetectionModeSelector
@@ -122,8 +98,6 @@ export const ImageUploader: React.FC = () => {
         onCancel={() => {
           setPendingFile(null)
           setPendingImageUrl(null)
-          setPendingSessionId(null)
-          setPendingImagePath(null)
         }}
       />
     )
@@ -145,7 +119,7 @@ export const ImageUploader: React.FC = () => {
           <Upload size={40} className="text-gray-500" />
         )}
         <p className="text-gray-400 text-sm">
-          {loading ? 'Uploading image…' : 'Drop an image here or click to upload'}
+          {loading ? 'Processing…' : 'Drop an image here or click to upload'}
         </p>
         {!loading && (
           <label className="bg-accent hover:bg-accent-hover text-white text-sm px-4 py-2 rounded cursor-pointer transition-colors">

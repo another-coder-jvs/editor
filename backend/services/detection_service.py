@@ -4,6 +4,7 @@ Detection service – uses Grounding DINO to find all objects in an image.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -31,6 +32,7 @@ FALLBACK_PROMPT = (
     "ball . helmet . food . mobile phone . stone"
 )
 
+
 def _iou(a: List[float], b: List[float]) -> float:
     """IoU between two [x1,y1,x2,y2] boxes."""
     ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
@@ -45,7 +47,6 @@ def _iou(a: List[float], b: List[float]) -> float:
 
 def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     """Remove duplicate detections — keep highest-score box when IoU > threshold."""
-    # Sort by score descending
     objects = sorted(objects, key=lambda o: o["score"], reverse=True)
     kept = []
     for obj in objects:
@@ -59,6 +60,32 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     return kept
 
 
+def _clean_ollama_prompt(raw: str) -> str:
+    """Clean Ollama output into a valid Grounding DINO dot-separated prompt."""
+    if not raw or not raw.strip():
+        return ""
+    # Take the last non-empty line (usually the actual list)
+    lines = raw.strip().splitlines()
+    for line in reversed(lines):
+        line = line.strip()
+        if line:
+            raw = line
+            break
+    # Remove bullet points, numbers, dashes
+    raw = re.sub(r'^[\d\-\*\)\(]+\s*', '', raw)
+    # Replace commas, semicolons, newlines with dots
+    raw = re.sub(r'[;,\n]+', ' . ', raw)
+    # Normalize spacing around dots
+    raw = re.sub(r'\s+', ' ', raw)
+    raw = re.sub(r'\s*\.\s*', ' . ', raw)
+    # Remove non-label characters
+    raw = re.sub(r'[^a-zA-Z0-9 .\-]', '', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip()
+    if not raw.endswith('.'):
+        raw += ' .'
+    return raw
+
+
 def detect_objects(
     image_path: str,
     prompt: Optional[str] = None,
@@ -70,11 +97,10 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    # --- Step 1: Use Ollama vision to identify relevant objects ---
+    # --- Step 1: Determine the prompt for Grounding DINO ---
     if prompt:
-        # User provided a custom prompt — use it directly
         text = prompt
-        logger.info(f"[detection] using user prompt: '{text[:80]}…'")
+        logger.info(f"[detection] using user prompt: '{text[:80]}'")
     else:
         ollama_available = False
         try:
@@ -87,7 +113,6 @@ def detect_objects(
                 logger.info("[detection] using Ollama vision to identify objects...")
                 raw_text = identify_objects(image_path)
                 logger.info(f"[detection] Ollama raw output: '{raw_text}'")
-                # Clean: extract only the object names, dot-separated
                 text = _clean_ollama_prompt(raw_text)
                 if not text:
                     logger.warning("[detection] Ollama returned empty prompt, using fallback")
@@ -100,37 +125,7 @@ def detect_objects(
             logger.info("[detection] Ollama not available, using fallback prompt")
             text = FALLBACK_PROMPT
 
-
-def _clean_ollama_prompt(raw: str) -> str:
-    """Clean Ollama output into a valid Grounding DINO dot-separated prompt."""
-    import re
-    if not raw or not raw.strip():
-        return ""
-    # Remove any prefix like "Here are the objects:" or "Objects:"
-    # Take only the actual list part
-    lines = raw.strip().splitlines()
-    # Use the last non-empty line (usually the actual list)
-    for line in reversed(lines):
-        line = line.strip()
-        if line:
-            raw = line
-            break
-    # Remove bullet points, numbers, dashes
-    raw = re.sub(r'^[\d\-\*\.\)\(]+\s*', '', raw)
-    # Replace commas, semicolons, newlines with dots
-    raw = re.sub(r'[,;\n]+', ' . ', raw)
-    # Replace multiple spaces/dots
-    raw = re.sub(r'\s+', ' ', raw)
-    raw = re.sub(r'\s*\.\s*', ' . ', raw)
-    # Remove any non-label characters (keep letters, spaces, dots, hyphens)
-    raw = re.sub(r'[^a-zA-Z0-9 .\-]', '', raw)
-    # Clean up spacing
-    raw = re.sub(r'\s+', ' ', raw).strip()
-    # Ensure ends with dot
-    if not raw.endswith('.'):
-        raw += ' .'
-    return raw
-
+    # --- Step 2: Run Grounding DINO ---
     logger.info("[detection] loading Grounding DINO model…")
     model, processor = model_manager.get_grounding_dino()
     logger.info("[detection] model ready, running inference…")
@@ -152,13 +147,11 @@ def _clean_ollama_prompt(raw: str) -> str:
             target_sizes=[(h, w)],
         )[0]
     except TypeError:
-        # Older transformers version — no threshold params
         results = processor.post_process_grounded_object_detection(
             outputs=outputs,
             input_ids=inputs.input_ids,
             target_sizes=[(h, w)],
         )[0]
-        # Manual filtering for older transformers versions
         keep = results["scores"] > box_threshold
         results = {
             "boxes": results["boxes"][keep],
@@ -180,16 +173,13 @@ def _clean_ollama_prompt(raw: str) -> str:
             },
         })
 
-    # Deduplicate overlapping boxes across all labels (IoU-based NMS)
     objects = _nms(objects, iou_threshold=0.5)
 
-    # Assign display names after dedup (same label appearing multiple times = distinct objects)
     seen: Dict[str, int] = {}
     for obj in objects:
         lbl = obj["label"]
         seen[lbl] = seen.get(lbl, 0) + 1
         obj["label"] = lbl if seen[lbl] == 1 else f"{lbl} {seen[lbl]}"
-        logger.debug(f"[detection]   {obj['label']} score={obj['score']} bbox={obj['bbox']}")
 
     logger.info(f"[detection] final objects ({len(objects)}): {[o['label'] for o in objects]}")
-    return objects
+    return objects or []
