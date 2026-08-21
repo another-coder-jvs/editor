@@ -109,5 +109,18 @@ def unload_models():
     return {"status": "ok", "message": "All models unloaded"}
 
 
+@app.get("/identify/status")
+def identify_status():
+    """Check if Ollama vision model is available."""
+    from services.identify_service import check_ollama, check_model, VISION_MODEL
+    ollama_ok = check_ollama()
+    model_ok = check_model() if ollama_ok else False
+    return {
+        "ollama_running": ollama_ok,
+        "model_available": model_ok,
+        "model_name": VISION_MODEL,
+    }
+
+
 if __name__ == '__main__':
     uvicorn.run(app, host="0.0.0.0" , port=8000)

@@ -10,24 +10,12 @@ import torch
 from PIL import Image
 
 from services.model_manager import model_manager, DEVICE
+from services.identify_service import identify_objects, check_ollama
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROMPT = (
-    "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
-    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
-    "tree . flower . plant . "
-    "building . house . bridge . tower . fence . "
-    "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
-    "bottle . cup . bowl . plate . fork . knife . spoon . "
-    "book . laptop . phone . keyboard . monitor . television . camera . "
-    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
-    "door . window . stairs . "
-    "sign . poster . "
-    "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase ."
-    "ball . helmet . food . mobile phone . stone"
-)
+# Fallback only — when Ollama is unavailable, use a minimal generic prompt
+FALLBACK_PROMPT = "object . person . item . surface . background ."
 
 def _iou(a: List[float], b: List[float]) -> float:
     """IoU between two [x1,y1,x2,y2] boxes."""
@@ -68,8 +56,26 @@ def detect_objects(
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")
 
-    text = prompt or DEFAULT_PROMPT
-    logger.info(f"[detection] using prompt: '{text[:80]}…'")
+    # --- Step 1: Use Ollama vision to identify relevant objects ---
+    if prompt:
+        # User provided a custom prompt — use it directly
+        text = prompt
+        logger.info(f"[detection] using user prompt: '{text[:80]}…'")
+    elif check_ollama():
+        try:
+            logger.info("[detection] using Ollama vision to identify objects...")
+            text = identify_objects(image_path)
+            # Grounding DINO expects dot-separated labels
+            text = text.replace(",", " . ").strip()
+            if not text.endswith("."):
+                text += " ."
+            logger.info(f"[detection] Ollama identified: '{text}'")
+        except Exception as e:
+            logger.warning(f"[detection] Ollama failed ({e}), using fallback prompt")
+            text = FALLBACK_PROMPT
+    else:
+        logger.info("[detection] Ollama not available, using fallback prompt")
+        text = FALLBACK_PROMPT
 
     logger.info("[detection] loading Grounding DINO model…")
     model, processor = model_manager.get_grounding_dino()
