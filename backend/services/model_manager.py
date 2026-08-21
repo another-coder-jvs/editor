@@ -1,10 +1,14 @@
 """
 Central model manager – downloads, caches, and provides access to all AI models.
+Includes idle-unload: all heavy models are freed after IDLE_SECONDS of inactivity.
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
+import time
+import threading
 from pathlib import Path
 from typing import Optional
 from diffusers import StableDiffusionXLImg2ImgPipeline
@@ -19,6 +23,9 @@ WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE  = torch.float16 if DEVICE == "cuda" else torch.float32
+
+# Idle timeout: unload all models after this many seconds of no activity
+IDLE_SECONDS = int(os.environ.get("MODEL_IDLE_SECONDS", "120"))  # default 2 min
 
 
 def _from_pretrained_with_fallback(cls, repo_id: str, **kwargs):
@@ -49,7 +56,10 @@ if DEVICE == "cuda":
 
 
 class ModelManager:
-    """Singleton that lazily loads and caches every AI model."""
+    """Singleton that lazily loads and caches every AI model.
+    All models auto-unload after IDLE_SECONDS of inactivity.
+    Call touch() on every model access to reset the timer.
+    """
 
     _instance: Optional["ModelManager"] = None
 
@@ -71,19 +81,71 @@ class ModelManager:
         self._rembg_session = None
         self._realesrgan = None
         self._img2img_pipe = None
-        logger.info("[model_manager] ModelManager singleton initialized (all models lazy)")
+        self._last_used = time.time()
+        self._idle_timer: Optional[threading.Timer] = None
+        self._lock = threading.Lock()
+        logger.info(f"[model_manager] ModelManager singleton initialized (all models lazy, idle unload={IDLE_SECONDS}s)")
+
+    # ── Idle-unload timer ───────────────────────────────────────────────────────
+    def touch(self) -> None:
+        """Reset the idle timer. Call after every model access."""
+        with self._lock:
+            self._last_used = time.time()
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+            self._idle_timer = threading.Timer(IDLE_SECONDS, self._idle_unload)
+            self._idle_timer.daemon = True
+            self._idle_timer.start()
+
+    def _idle_unload(self) -> None:
+        """Unload all models if idle for IDLE_SECONDS."""
+        with self._lock:
+            elapsed = time.time() - self._last_used
+            if elapsed < IDLE_SECONDS:
+                return  # timer was reset, skip
+            logger.info(f"[model_manager] Idle {elapsed:.0f}s > {IDLE_SECONDS}s — unloading all models")
+            self.unload_all()
+
+    def unload_all(self) -> None:
+        """Unload every model to free RAM + VRAM."""
+        with self._lock:
+            unloaded = []
+            if self._inpaint_pipe is not None:
+                del self._inpaint_pipe; self._inpaint_pipe = None; unloaded.append("inpaint")
+            if self._img2img_pipe is not None:
+                del self._img2img_pipe; self._img2img_pipe = None; unloaded.append("img2img")
+            if self._grounding_dino is not None:
+                del self._grounding_dino; self._grounding_dino = None; unloaded.append("grounding_dino")
+            if self._grounding_dino_processor is not None:
+                del self._grounding_dino_processor; self._grounding_dino_processor = None; unloaded.append("gdino_processor")
+            if self._sam2_predictor is not None:
+                del self._sam2_predictor; self._sam2_predictor = None; unloaded.append("sam2")
+            if self._llm_pipe is not None:
+                del self._llm_pipe; self._llm_pipe = None; unloaded.append("llm")
+            if self._rembg_session is not None:
+                del self._rembg_session; self._rembg_session = None; unloaded.append("rembg")
+            if self._realesrgan is not None:
+                del self._realesrgan; self._realesrgan = None; unloaded.append("realesrgan")
+            if unloaded:
+                gc.collect()
+                if DEVICE == "cuda":
+                    torch.cuda.empty_cache()
+                logger.info(f"[model_manager] Unloaded: {unloaded} — VRAM/RAM freed")
+            else:
+                logger.debug("[model_manager] Nothing to unload")
 
     def get_img2img_pipe(self):
         if self._img2img_pipe is None:
             logger.info("[model_manager] Loading SDXL img2img pipeline...")
             self._img2img_pipe = self._load_sdxl_img2img()
+        self.touch()
         return self._img2img_pipe
 
     def unload_img2img_pipe(self):
         if self._img2img_pipe is not None:
             del self._img2img_pipe
             self._img2img_pipe = None
-            import gc; gc.collect()
+            gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
             logger.info("[model_manager] SDXL img2img pipeline unloaded")
@@ -92,7 +154,7 @@ class ModelManager:
         if self._inpaint_pipe is not None:
             del self._inpaint_pipe
             self._inpaint_pipe = None
-            import gc; gc.collect()
+            gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
             logger.info("[model_manager] SDXL inpaint pipeline unloaded")
@@ -111,6 +173,7 @@ class ModelManager:
                 model_id, cache_dir=cache
             ).to(DEVICE)
             logger.info(f"[model_manager] Grounding DINO model loaded → {DEVICE}")
+        self.touch()
         return self._grounding_dino, self._grounding_dino_processor
 
     # ── SAM2 ──────────────────────────────────────────────────────────────────
@@ -132,6 +195,7 @@ class ModelManager:
             except Exception as e:
                 logger.warning(f"[model_manager] SAM2 unavailable ({e}), falling back to SAM")
                 self._sam2_predictor = self._load_sam_fallback()
+        self.touch()
         return self._sam2_predictor
 
     def _download_sam2(self, checkpoint: Path):
@@ -178,6 +242,7 @@ class ModelManager:
         if self._inpaint_pipe is None:
             logger.info("[model_manager] Loading SDXL inpainting pipeline…")
             self._inpaint_pipe = self._load_sdxl_inpaint()
+        self.touch()
         return self._inpaint_pipe
 
     def _load_sdxl_inpaint(self):
@@ -206,6 +271,7 @@ class ModelManager:
             except Exception as e:
                 logger.warning(f"[model_manager] Qwen unavailable ({e}), trying Llama 3.1")
                 self._llm_pipe = self._load_llama()
+        self.touch()
         return self._llm_pipe
     def _load_qwen(self):
         from transformers import pipeline as hf_pipeline
@@ -260,6 +326,7 @@ class ModelManager:
                 providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
             )
             logger.info("[model_manager] rembg loaded")
+        self.touch()
         return self._rembg_session
 
     # ── Real-ESRGAN ───────────────────────────────────────────────────────────
@@ -278,6 +345,7 @@ class ModelManager:
                 tile=512, tile_pad=10, pre_pad=0, half=(DEVICE == "cuda"),
             )
             logger.info(f"[model_manager] Real-ESRGAN x{scale} loaded")
+        self.touch()
         return self._realesrgan
 
     def _download_realesrgan(self, path: Path, scale: int):

@@ -101,5 +101,13 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/models/unload")
+def unload_models():
+    """Force-unload all AI models to free RAM + VRAM."""
+    from services.model_manager import model_manager
+    model_manager.unload_all()
+    return {"status": "ok", "message": "All models unloaded"}
+
+
 if __name__ == '__main__':
     uvicorn.run(app, host="0.0.0.0" , port=8000)
