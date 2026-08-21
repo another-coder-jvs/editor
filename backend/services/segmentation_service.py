@@ -7,13 +7,19 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image
 
 from services.model_manager import model_manager
+from services.background_detector import (
+    BackgroundType,
+    analyze_background,
+    create_background_mask,
+    analyze_and_create_masks,
+)
 from schemas import BoundingBox, LayerData
  
 from utils import config
@@ -102,6 +108,19 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     image_pil = Image.open(p).convert("RGB")
     image_np  = np.array(image_pil)
     logger.info(f"[segmentation] image shape: {image_np.shape}")
+
+    # ── Background Analysis ────────────────────────────────────────────────────
+    logger.info("[segmentation] analyzing background...")
+    bg_analysis, bg_mask = analyze_and_create_masks(
+        image_np,
+        session_dir=str(TEMP_DIR / session_id),
+        session_id=session_id,
+    )
+    logger.info(
+        f"[segmentation] background type: {bg_analysis.bg_type.value}, "
+        f"dominant_color: {bg_analysis.dominant_color}, "
+        f"confidence: {bg_analysis.confidence:.2f}"
+    )
 
     logger.info("[segmentation] setting image in SAM2…")
     predictor.set_image(image_np)
@@ -198,40 +217,52 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
 
-    # --- Unrecognized remainder layer (0% data loss) ---
-    remainder_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
-
+    # --- Background Layer ────────────────────────────────────────────────────
+    # Use analyzed background mask or create from remainder
+    if bg_mask is not None and np.sum(bg_mask > 0) > 0:
+        # Use the analyzed background mask
+        logger.info("[segmentation] using analyzed background mask")
+        background_mask = bg_mask
+    else:
+        # Fallback: create from remainder of objects
+        logger.info("[segmentation] creating background mask from remainder")
+        background_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
+    
     # Remove tiny disconnected blobs (shadow noise, compression artifacts)
     # Keep only connected components larger than 0.5% of total image area
     min_area = int(img_h * img_w * 0.005)
     num_labels, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
-        (remainder_mask > 128).astype(np.uint8), connectivity=8
+        (background_mask > 128).astype(np.uint8), connectivity=8
     )
-    clean_remainder = np.zeros_like(remainder_mask)
+    clean_background = np.zeros_like(background_mask)
     for cc_idx in range(1, num_labels):  # skip background (0)
         if stats[cc_idx, cv2.CC_STAT_AREA] >= min_area:
-            clean_remainder[cc_labels == cc_idx] = 255
+            clean_background[cc_labels == cc_idx] = 255
 
-    remainder_pixel_count = int(np.sum(clean_remainder > 0))
-    logger.info(f"[segmentation] remainder pixels after noise removal: {remainder_pixel_count}")
+    # Use the larger of analyzed mask vs remainder for better coverage
+    if bg_mask is not None:
+        clean_background = np.maximum(clean_background, bg_mask)
 
-    if remainder_pixel_count > 0:
-        layer_id   = f"{session_id}_remainder_{uuid.uuid4().hex[:6]}"
-        mask_name  = f"{layer_id}_unrecognized_mask.png"
-        png_name   = f"{layer_id}_unrecognized_layer.png"
+    background_pixel_count = int(np.sum(clean_background > 0))
+    logger.info(f"[segmentation] background pixels: {background_pixel_count}")
+
+    if background_pixel_count > 0:
+        layer_id   = f"{session_id}_bg_{uuid.uuid4().hex[:6]}"
+        mask_name  = f"{layer_id}_background_mask.png"
+        png_name   = f"{layer_id}_background_layer.png"
         mask_file  = session_dir / mask_name
         png_file   = session_dir / png_name
 
-        Image.fromarray(clean_remainder).save(str(mask_file))
+        Image.fromarray(clean_background).save(str(mask_file))
 
         rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
-        rgba[:, :, 3] = clean_remainder
+        rgba[:, :, 3] = clean_background
         Image.fromarray(rgba).save(str(png_file), optimize=False)
 
         full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
         layers.append(LayerData(
             id=layer_id,
-            name="unrecognized",
+            name="background",
             mask_path=f"/temp/{session_id}/{mask_name}",
             png_path=f"/temp/{session_id}/{png_name}",
             bbox=BoundingBox(**full_bbox),
@@ -239,7 +270,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
             visible=True,
             opacity=1.0,
         ))
-        logger.info(f"[segmentation] unrecognized remainder layer created")
+        logger.info(f"[segmentation] background layer created: type={bg_analysis.bg_type.value}")
 
     # Save session metadata for cache restore
     meta = {
