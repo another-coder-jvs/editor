@@ -125,8 +125,8 @@ def identify_objects(image_path: str) -> str:
         ],
         options={
             "temperature": 0,
-            "num_ctx": 2048,
-            "num_predict": 100,
+            "num_ctx": 4096,
+            "num_predict": 300,
         },
         keep_alive="30m",
     )
