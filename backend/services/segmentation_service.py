@@ -94,13 +94,18 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     predictor = model_manager.get_sam2()
 
     logger.info(f"[segmentation] opening image: {image_path}")
-    image_path = str(image_path).lstrip("/temp")
 
-    # Build path relative to project root
-    p = (TEMP_DIR / image_path).resolve()
- 
-    logger.info(f"RAW={image_path}")
-    logger.info(f"FINAL={p} exists={p.exists()}")
+    # Resolve image path — handle both absolute and relative paths
+    p = Path(image_path)
+    if not p.is_absolute():
+        # Relative path: resolve against TEMP_DIR
+        # Strip leading "/temp" or "temp/" if present
+        rel = str(image_path).lstrip("/")
+        if rel.startswith("temp/"):
+            rel = rel[len("temp/"):]
+        p = (TEMP_DIR / rel).resolve()
+    
+    logger.info(f"[segmentation] resolved path: {p} exists={p.exists()}")
 
     if not p.exists():
         raise FileNotFoundError(f"Image not found: {p}")

@@ -18,14 +18,42 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 VISION_MODEL = os.environ.get("VISION_MODEL", "minicpm-v4.6")
 
 
+def _try_start_ollama() -> bool:
+    """Try to start Ollama server if installed but not running."""
+    import shutil
+    import subprocess
+    if not shutil.which("ollama"):
+        return False
+    logger.info("[identify] Ollama installed but not running, starting it...")
+    try:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        import time
+        time.sleep(3)  # wait for server to start
+        import requests
+        r = requests.get(f"{OLLAMA_URL}/api/version", timeout=5)
+        if r.status_code == 200:
+            logger.info("[identify] Ollama started successfully")
+            return True
+    except Exception as e:
+        logger.warning(f"[identify] Failed to start Ollama: {e}")
+    return False
+
+
 def check_ollama() -> bool:
-    """Check if Ollama server is running."""
+    """Check if Ollama server is running, try to start if installed."""
     try:
         import requests
         r = requests.get(f"{OLLAMA_URL}/api/version", timeout=5)
-        return r.status_code == 200
+        if r.status_code == 200:
+            return True
     except Exception:
-        return False
+        pass
+    # Not running — try to start it
+    return _try_start_ollama()
 
 
 def check_model() -> bool:
