@@ -15,7 +15,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-VISION_MODEL = os.environ.get("VISION_MODEL", "minicpm-v4.6")
+VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")  # or bakllava, llava:13b
 
 
 def _try_start_ollama() -> bool:
@@ -119,23 +119,22 @@ def identify_objects(image_path: str) -> str:
         messages=[
             {
                 "role": "user",
-                "content": "List the objects in this image as a comma-separated list. Only names, nothing else.",
+                "content": "What objects are in this image? Reply with only object names separated by commas. No sentences, no explanations.",
                 "images": [img_b64],
             }
         ],
         options={
             "temperature": 0,
             "num_ctx": 4096,
-            "num_predict": 300,
+            "num_predict": 200,
         },
         keep_alive="30m",
     )
     
     logger.info(f"[identify] Full Ollama response: {response}")
     
-    content = response.get("message", {}).get("content", "")
-    answer = content.strip() if content else ""
-    logger.info(f"[identify] Vision model raw output: '{answer}'")
+    answer = response.get("message", {}).get("content", "").strip()
+    logger.info(f"[identify] Vision model output: '{answer}'")
     
     if not answer:
         logger.warning("[identify] Vision model returned empty response")
