@@ -119,7 +119,7 @@ def identify_objects(image_path: str) -> str:
         messages=[
             {
                 "role": "user",
-                "content": "What objects are in this image? Reply with only object names separated by commas. No sentences, no explanations.",
+                "content": "What objects and background are in this image? Reply with only names separated by commas. No sentences, no explanations. identify only Objects and background no text / numbers",
                 "images": [img_b64],
             }
         ],

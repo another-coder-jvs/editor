@@ -3,12 +3,15 @@
 git status
 git add .
 
-if [ -n "$1" ]; then
-    git commit -m "updated - $1 - $(date '+%d/%m/%Y %H:%M:%S')"
+# Use the provided branch, otherwise use the current branch
+BRANCH="${1:-$(git branch --show-current)}"
+
+if [ -n "$2" ]; then
+    git commit -m "updated - $2 - $(date '+%d/%m/%Y %H:%M:%S')"
 else
     git commit -m "updated - $(date '+%d/%m/%Y %H:%M:%S')"
 fi
 
-git push origin master
+git push origin "$BRANCH"
 
-echo "Pushed!"
+echo "Pushed to $BRANCH!"
