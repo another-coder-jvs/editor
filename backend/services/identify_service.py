@@ -131,7 +131,10 @@ def identify_objects(image_path: str) -> str:
         keep_alive="30m",
     )
     
-    answer = response["message"]["content"].strip()
+    logger.info(f"[identify] Full Ollama response: {response}")
+    
+    content = response.get("message", {}).get("content", "")
+    answer = content.strip() if content else ""
     logger.info(f"[identify] Vision model raw output: '{answer}'")
     
     if not answer:
