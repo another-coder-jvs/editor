@@ -46,11 +46,25 @@ echo ""
 echo "[4/5] Installing frontend dependencies..."
 cd frontend
 npm install
-cd ..
+cd ..# Install Ollama for vision identification (optional)
+
+echo ""
+echo "[5/6] Installing Ollama (for AI vision identification)..."
+if ! command -v ollama &>/dev/null; then
+    curl -fsSL https://ollama.com/install.sh | sh
+    echo "Ollama installed. Pulling vision model..."
+    ollama pull minicpm-v4.6 || echo "Vision model pull failed — you can pull it later with: ollama pull minicpm-v4.6"
+else
+    echo "Ollama already installed: $(ollama --version 2>&1 || echo 'unknown version')"
+    # Ensure vision model is available
+    ollama list 2>/dev/null | grep -q minicpm || \
+        (echo "Pulling vision model..." && ollama pull minicpm-v4.6 || echo "Pull failed — run later: ollama pull minicpm-v4.6")
+fi
 
 # Create required directories
+
 echo ""
-echo "[5/5] Creating directories..."
+echo "[6/6] Creating directories..."
 mkdir -p weights projects outputs temp
 
 echo ""

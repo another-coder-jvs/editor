@@ -14,8 +14,22 @@ from services.identify_service import identify_objects, check_ollama
 
 logger = logging.getLogger(__name__)
 
-# Fallback only — when Ollama is unavailable, use a minimal generic prompt
-FALLBACK_PROMPT = "object . person . item . surface . background ."
+# Fallback when Ollama is unavailable — comprehensive object list for Grounding DINO
+FALLBACK_PROMPT = (
+    "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
+    "dog . cat . bird . horse . cow . sheep . elephant . bear . "
+    "tree . flower . plant . "
+    "building . house . bridge . tower . fence . "
+    "pillow . chair . table . sofa . bed . desk . cabinet . shelf . lamp . "
+    "bottle . cup . bowl . plate . fork . knife . spoon . "
+    "book . laptop . phone . keyboard . monitor . television . camera . "
+    "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
+    "door . window . stairs . "
+    "sign . poster . "
+    "fire hydrant . traffic light . bench . trash can . "
+    "clock . mirror . painting . vase . "
+    "ball . helmet . food . mobile phone . stone"
+)
 
 def _iou(a: List[float], b: List[float]) -> float:
     """IoU between two [x1,y1,x2,y2] boxes."""
@@ -61,55 +75,96 @@ def detect_objects(
         # User provided a custom prompt — use it directly
         text = prompt
         logger.info(f"[detection] using user prompt: '{text[:80]}…'")
-    elif check_ollama():
-        try:
-            logger.info("[detection] using Ollama vision to identify objects...")
-            text = identify_objects(image_path)
-            # Grounding DINO expects dot-separated labels
-            text = text.replace(",", " . ").strip()
-            if not text.endswith("."):
-                text += " ."
-            logger.info(f"[detection] Ollama identified: '{text}'")
-        except Exception as e:
-            logger.warning(f"[detection] Ollama failed ({e}), using fallback prompt")
-            text = FALLBACK_PROMPT
     else:
-        logger.info("[detection] Ollama not available, using fallback prompt")
-        text = FALLBACK_PROMPT
+        ollama_available = False
+        try:
+            ollama_available = check_ollama()
+        except Exception:
+            pass
+
+        if ollama_available:
+            try:
+                logger.info("[detection] using Ollama vision to identify objects...")
+                raw_text = identify_objects(image_path)
+                logger.info(f"[detection] Ollama raw output: '{raw_text}'")
+                # Clean: extract only the object names, dot-separated
+                text = _clean_ollama_prompt(raw_text)
+                if not text:
+                    logger.warning("[detection] Ollama returned empty prompt, using fallback")
+                    text = FALLBACK_PROMPT
+                logger.info(f"[detection] final prompt for Grounding DINO: '{text}'")
+            except Exception as e:
+                logger.warning(f"[detection] Ollama failed ({e}), using fallback prompt")
+                text = FALLBACK_PROMPT
+        else:
+            logger.info("[detection] Ollama not available, using fallback prompt")
+            text = FALLBACK_PROMPT
+
+
+def _clean_ollama_prompt(raw: str) -> str:
+    """Clean Ollama output into a valid Grounding DINO dot-separated prompt."""
+    import re
+    if not raw or not raw.strip():
+        return ""
+    # Remove any prefix like "Here are the objects:" or "Objects:"
+    # Take only the actual list part
+    lines = raw.strip().splitlines()
+    # Use the last non-empty line (usually the actual list)
+    for line in reversed(lines):
+        line = line.strip()
+        if line:
+            raw = line
+            break
+    # Remove bullet points, numbers, dashes
+    raw = re.sub(r'^[\d\-\*\.\)\(]+\s*', '', raw)
+    # Replace commas, semicolons, newlines with dots
+    raw = re.sub(r'[,;\n]+', ' . ', raw)
+    # Replace multiple spaces/dots
+    raw = re.sub(r'\s+', ' ', raw)
+    raw = re.sub(r'\s*\.\s*', ' . ', raw)
+    # Remove any non-label characters (keep letters, spaces, dots, hyphens)
+    raw = re.sub(r'[^a-zA-Z0-9 .\-]', '', raw)
+    # Clean up spacing
+    raw = re.sub(r'\s+', ' ', raw).strip()
+    # Ensure ends with dot
+    if not raw.endswith('.'):
+        raw += ' .'
+    return raw
 
     logger.info("[detection] loading Grounding DINO model…")
     model, processor = model_manager.get_grounding_dino()
     logger.info("[detection] model ready, running inference…")
 
     inputs = processor(images=image, text=text, return_tensors="pt").to(DEVICE)
-    logger.debug(f"[detection] input_ids shape: {inputs.input_ids.shape}")
+    logger.info(f"[detection] prompt='{text}' input_ids shape={inputs.input_ids.shape}")
 
     with torch.no_grad():
         outputs = model(**inputs)
     logger.info("[detection] inference complete, post-processing…")
 
-    # results = processor.post_process_grounded_object_detection(
-    #     outputs,
-    #     inputs.input_ids,
-    #     box_threshold=box_threshold,
-    #     text_threshold=text_threshold,
-    #     target_sizes=[(h, w)],
-    # )[0]
-
-    results = processor.post_process_grounded_object_detection(
-        outputs=outputs,
-        input_ids=inputs.input_ids,
-        target_sizes=[(h, w)],
-    )[0]
-
-    # Manual filtering for older transformers versions
-    keep = results["scores"] > box_threshold
-
-    results = {
-        "boxes": results["boxes"][keep],
-        "scores": results["scores"][keep],
-        "labels": [results["labels"][i] for i, k in enumerate(keep.tolist()) if k],
-    }
+    # Try newer API first (with thresholds), fall back to older API
+    try:
+        results = processor.post_process_grounded_object_detection(
+            outputs,
+            inputs.input_ids,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+            target_sizes=[(h, w)],
+        )[0]
+    except TypeError:
+        # Older transformers version — no threshold params
+        results = processor.post_process_grounded_object_detection(
+            outputs=outputs,
+            input_ids=inputs.input_ids,
+            target_sizes=[(h, w)],
+        )[0]
+        # Manual filtering for older transformers versions
+        keep = results["scores"] > box_threshold
+        results = {
+            "boxes": results["boxes"][keep],
+            "scores": results["scores"][keep],
+            "labels": [results["labels"][i] for i, k in enumerate(keep.tolist()) if k],
+        }
     logger.info(f"[detection] raw detections: {len(results['scores'])}")
 
     objects: List[Dict[str, Any]] = []

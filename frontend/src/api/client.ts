@@ -33,6 +33,15 @@ api.interceptors.response.use(
   err => { apiLoading._dec(); return Promise.reject(err) },
 )
 
+export async function uploadFile(
+  file: File,
+): Promise<{ session_id: string; image_path: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/upload', form)
+  return data
+}
+
 export async function detectObjects(
   file: File,
   prompt?: string
@@ -41,6 +50,36 @@ export async function detectObjects(
   form.append('file', file)
   if (prompt) form.append('prompt', prompt)
   const { data } = await api.post('/detect', form)
+  return data
+}
+
+export async function detectObjectsWithPrompt(
+  session_id: string,
+  image_path: string,
+  prompt: string,
+): Promise<{ session_id: string; image_path: string; objects: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }> }> {
+  const form = new FormData()
+  // We need to send a file for the detect endpoint, but we already have the session.
+  // So we send a re-detect request with the prompt.
+  const { data } = await api.post('/detect', form, {
+    params: { session_id, image_path, prompt },
+  })
+  return data
+}
+
+export async function identifyObjects(
+  image_path: string,
+): Promise<{ objects: string }> {
+  const { data } = await api.post('/identify', { image_path })
+  return data
+}
+
+export async function redetectObjects(
+  session_id: string,
+  image_path: string,
+  prompt?: string,
+): Promise<{ session_id: string; image_path: string; objects: Array<{ label: string; score: number; bbox: { x: number; y: number; width: number; height: number } }> }> {
+  const { data } = await api.post('/detect/re', { session_id, image_path, prompt: prompt || null })
   return data
 }
 
