@@ -75,14 +75,8 @@ class ModelManager:
 
     def get_img2img_pipe(self):
         if self._img2img_pipe is None:
-            logger.info("[model_manager] Loading img2img pipeline...")
-            try:
-                self._img2img_pipe = self._load_flux_img2img()
-            except Exception as e:
-                logger.warning(
-                    f"[model_manager] FLUX img2img unavailable ({e}), using SDXL img2img"
-                )
-                self._img2img_pipe = self._load_sdxl_img2img()
+            logger.info("[model_manager] Loading SDXL img2img pipeline...")
+            self._img2img_pipe = self._load_sdxl_img2img()
         return self._img2img_pipe
 
     def unload_img2img_pipe(self):
@@ -92,7 +86,7 @@ class ModelManager:
             import gc; gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
-            logger.info("[model_manager] img2img pipeline unloaded")
+            logger.info("[model_manager] SDXL img2img pipeline unloaded")
 
     def unload_inpaint_pipe(self):
         if self._inpaint_pipe is not None:
@@ -101,7 +95,7 @@ class ModelManager:
             import gc; gc.collect()
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
-            logger.info("[model_manager] inpaint pipeline unloaded")
+            logger.info("[model_manager] SDXL inpaint pipeline unloaded")
 
     # ── Grounding DINO ────────────────────────────────────────────────────────
     def get_grounding_dino(self):
@@ -164,21 +158,6 @@ class ModelManager:
         predictor = SamPredictor(sam)
         logger.info("[model_manager] SAM fallback loaded")
         return predictor
-    def _load_flux_img2img(self):
-        logger.info("[model_manager] Loading FLUX img2img...")
-
-        pipe = FluxImg2ImgPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-dev",
-            torch_dtype=DTYPE,
-            cache_dir=str(WEIGHTS_DIR / "flux"),
-        )
-
-        pipe.to(DEVICE)
-        pipe.enable_model_cpu_offload()
-
-        logger.info("[model_manager] FLUX img2img loaded")
-
-        return pipe
     def _load_sdxl_img2img(self):
         logger.info("[model_manager] Loading SDXL img2img...")
         pipe = _from_pretrained_with_fallback(
@@ -197,29 +176,9 @@ class ModelManager:
     # ── Inpainting ────────────────────────────────────────────────────────────
     def get_inpaint_pipe(self):
         if self._inpaint_pipe is None:
-            logger.info("[model_manager] Loading inpainting pipeline…")
-            try:
-                if os.environ.get("USE_SDXL"):
-                    raise RuntimeError("USE_SDXL env var set, skipping FLUX")
-                self._inpaint_pipe = self._load_flux_kontext()
-            except Exception as e:
-                logger.warning(f"[model_manager] FLUX unavailable ({e}), using SDXL inpaint")
-                self._inpaint_pipe = self._load_sdxl_inpaint()
+            logger.info("[model_manager] Loading SDXL inpainting pipeline…")
+            self._inpaint_pipe = self._load_sdxl_inpaint()
         return self._inpaint_pipe
-
-    def _load_flux_kontext(self):
-        from diffusers import FluxInpaintPipeline
-        logger.info("[model_manager] Loading FLUX.1-dev inpaint…")
-        pipe = _from_pretrained_with_fallback(
-            FluxInpaintPipeline,
-            "black-forest-labs/FLUX.1-dev",
-            torch_dtype=DTYPE,
-            cache_dir=str(WEIGHTS_DIR / "flux"),
-        )
-        pipe.to(DEVICE)
-        pipe.enable_model_cpu_offload()
-        logger.info("[model_manager] FLUX inpaint loaded with CPU offload")
-        return pipe
 
     def _load_sdxl_inpaint(self):
         from diffusers import StableDiffusionXLInpaintPipeline
