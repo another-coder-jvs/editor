@@ -119,7 +119,16 @@ def identify_objects(image_path: str) -> str:
         messages=[
             {
                 "role": "user",
-                "content": "What objects and background are in this image? Reply with only names separated by commas. No sentences, no explanations. identify only Objects and background no text / numbers",
+                "content": (
+                    "List the physical objects in this image as comma-separated names.\n"
+                    "Rules:\n"
+                    "- Only tangible objects (shoe, car, chair, bottle, person)\n"
+                    "- Skip all text, letters, words, typography, logos\n"
+                    "- Skip abstract things (art, design, poster, flyer, background)\n"
+                    "- No duplicates or synonyms (e.g. shoe=footwear=sneaker, pick one)\n"
+                    "- Short common English names only\n"
+                    "- Nothing else, just the comma-separated list"
+                ),
                 "images": [img_b64],
             }
         ],

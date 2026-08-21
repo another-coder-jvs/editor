@@ -60,6 +60,40 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     return kept
 
 
+# Synonyms map — merge common duplicates into one canonical name
+SYNONYM_MAP = {
+    "sneaker": "shoe", "footwear": "shoe", "sneakers": "shoe", "boots": "shoe",
+    "footwear": "shoe", "heel": "shoe", "sandal": "shoe",
+    "vehicle": "car", "automobile": "car", "sedan": "car", "suv": "car",
+    "canine": "dog", "puppy": "dog",
+    "feline": "cat", "kitten": "cat",
+    "sofa": "chair", "couch": "chair", "seat": "chair",
+    "glasses": "glasses", "spectacles": "glasses", "eyeglasses": "glasses",
+    "television": "tv", "monitor": "tv",
+    "mobile": "phone", "cellphone": "phone", "smartphone": "phone",
+    "laptop": "laptop", "notebook": "laptop", "computer": "laptop",
+    "backpack": "bag", "handbag": "bag", "purse": "bag",
+    "bottle": "bottle", "flask": "bottle",
+    "cup": "cup", "mug": "cup", "glass": "cup",
+    "plate": "plate", "dish": "plate",
+    "bicycle": "bicycle", "bike": "bicycle",
+    "motorcycle": "motorcycle", "motorbike": "motorcycle",
+    "building": "building", "house": "building", "structure": "building",
+    "tree": "tree", "plant": "plant",
+    "flower": "flower", "blossom": "flower",
+    "pillow": "pillow", "cushion": "pillow",
+    "poster": "poster", "flyer": "poster", "billboard": "poster",
+    "sign": "sign", "signboard": "sign",
+    "window": "window", "door": "door",
+    "hat": "hat", "cap": "hat", "helmet": "hat",
+    "book": "book", "notebook": "book",
+    "clock": "clock", "watch": "clock",
+    "mirror": "mirror",
+    "vase": "vase",
+    "lamp": "lamp", "light": "lamp", "lantern": "lamp",
+}
+
+
 def _clean_ollama_prompt(raw: str) -> str:
     """Clean Ollama output into a valid Grounding DINO dot-separated prompt."""
     if not raw or not raw.strip():
@@ -73,17 +107,24 @@ def _clean_ollama_prompt(raw: str) -> str:
             break
     # Remove bullet points, numbers, dashes
     raw = re.sub(r'^[\d\-\*\)\(]+\s*', '', raw)
-    # Replace commas, semicolons, newlines with dots
-    raw = re.sub(r'[;,\n]+', ' . ', raw)
-    # Normalize spacing around dots
-    raw = re.sub(r'\s+', ' ', raw)
-    raw = re.sub(r'\s*\.\s*', ' . ', raw)
-    # Remove non-label characters
-    raw = re.sub(r'[^a-zA-Z0-9 .\-]', '', raw)
-    raw = re.sub(r'\s+', ' ', raw).strip()
-    if not raw.endswith('.'):
-        raw += ' .'
-    return raw
+    # Split into individual items
+    items = re.split(r'[,;\n]+', raw)
+    # Clean each item
+    cleaned = []
+    seen = set()
+    for item in items:
+        item = re.sub(r'[^a-zA-Z0-9\s\-]', '', item).strip().lower()
+        if not item or len(item) < 2:
+            continue
+        # Map synonyms
+        canonical = SYNONYM_MAP.get(item, item)
+        if canonical not in seen:
+            seen.add(canonical)
+            cleaned.append(canonical)
+    if not cleaned:
+        return ""
+    result = " . ".join(cleaned) + " ."
+    return result
 
 
 def detect_objects(
