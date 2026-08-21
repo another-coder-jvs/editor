@@ -32,11 +32,68 @@ def edit_layer(
     logger.info(f"[editing] session={session_id} layer='{layer_name}' prompt='{prompt}'")
 
     parsed       = parse_edit_prompt(prompt, layer_name)
+    
+    # ── Handle multi-edit (compound prompts) ────────────────────────────────────
+    if parsed.get("multi_edit") and parsed.get("edits"):
+        edits = parsed["edits"]
+        logger.info(f"[editing] compound prompt → {len(edits)} edits: {[e.get('edit_type') for e in edits]}")
+        
+        current_layer_path = layer_png_path
+        
+        for i, edit in enumerate(edits):
+            edit_type    = edit.get("edit_type", "other")
+            edit_params  = edit.get("edit_params", {})
+            inpaint_prompt = edit.get("inpaint_prompt", prompt)
+            logger.info(f"[editing] step {i+1}/{len(edits)}: edit_type={edit_type} params={edit_params} prompt='{inpaint_prompt}'")
+            
+            # Execute this single edit
+            current_layer_path = _execute_single_edit(
+                session_id=session_id,
+                layer_id=f"{layer_id}_step{i}",
+                layer_name=layer_name,
+                layer_png_path=current_layer_path,
+                original_image_path=original_image_path,
+                mask_path=mask_path,
+                prompt=inpaint_prompt,
+                strength=strength,
+                guidance_scale=guidance_scale,
+                steps=steps,
+                edit_type_override=edit_type_override or edit_type,
+                edit_params_override=edit_params_override or edit_params,
+            )
+            logger.info(f"[editing] step {i+1} complete → {current_layer_path}")
+        
+        return current_layer_path
+    
+    # ── Single edit (original path) ─────────────────────────────────────────────
     edit_type    = edit_type_override or parsed.get("edit_type", "other")
     edit_params  = edit_params_override or parsed.get("edit_params", {})
     inpaint_prompt = parsed.get("inpaint_prompt", prompt)
     logger.info(f"[editing] edit_type={edit_type} params={edit_params}")
 
+    return _execute_single_edit(
+        session_id=session_id,
+        layer_id=layer_id,
+        layer_name=layer_name,
+        layer_png_path=layer_png_path,
+        original_image_path=original_image_path,
+        mask_path=mask_path,
+        prompt=inpaint_prompt,
+        strength=strength,
+        guidance_scale=guidance_scale,
+        steps=steps,
+        edit_type_override=edit_type_override,
+        edit_params_override=edit_params_override,
+    )
+
+
+def _execute_single_edit(
+    session_id: str, layer_id: str, layer_name: str,
+    layer_png_path: str, original_image_path: str, mask_path: str,
+    prompt: str, strength: float = 0.75, guidance_scale: float = 7.5, steps: int = 20,
+    edit_type_override: str | None = None, edit_params_override: dict | None = None,
+) -> str:
+    """Execute a single edit operation on a layer image."""
     # Check available RAM
     if DEVICE == "cuda":
         import torch as _torch
@@ -46,6 +103,9 @@ def edit_layer(
         import psutil
         _available_gb = psutil.virtual_memory().available / 1024**3
         _low_ram = _available_gb < 5.5
+
+    edit_type = edit_type_override or "other"
+    edit_params = edit_params_override or {}
 
     GENERATIVE_TYPES = {"replace", "generative_fill", "anime", "oil_painting", "other", "style_transfer"}
 
@@ -98,7 +158,7 @@ def edit_layer(
     handler = handlers.get(edit_type, _inpaint)
     logger.info(f"[editing] dispatching to handler: {handler.__name__}")
     if edit_type in AI_TYPES:
-        result = handler(layer_img, original_image_path, mask_path, inpaint_prompt, strength, guidance_scale, steps, edit_params)
+        result = handler(layer_img, original_image_path, mask_path, prompt, strength, guidance_scale, steps, edit_params)
         # Free heavy model RAM immediately after use
         import gc
         if edit_type == "style_transfer":
@@ -107,7 +167,7 @@ def edit_layer(
             model_manager.unload_inpaint_pipe()
         gc.collect()
     elif edit_type == "recolor":
-        result = handler(layer_img, original_image_path, mask_path, inpaint_prompt, strength, guidance_scale, steps, edit_params)
+        result = handler(layer_img, original_image_path, mask_path, prompt, strength, guidance_scale, steps, edit_params)
     else:
         if edit_type == "text_edit":
             result = handler(layer_img, edit_params, original_image_path)
