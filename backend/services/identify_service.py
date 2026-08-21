@@ -101,30 +101,26 @@ def identify_objects(image_path: str) -> str:
     logger.info(f"[identify] Analyzing image: {image_path}")
     
     import ollama
+    import base64
+    from pathlib import Path
+    
+    # Read image as base64 (more reliable than file path across systems)
+    img_path = Path(image_path)
+    if not img_path.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    
+    with open(img_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode("utf-8")
+    
+    logger.info(f"[identify] Image loaded ({img_path.stat().st_size // 1024}KB), sending to {VISION_MODEL}...")
     
     response = ollama.chat(
         model=VISION_MODEL,
         messages=[
             {
                 "role": "user",
-                "content": """
-                Identify the unique objects visible in this image.
-
-                Return ONLY a dot-separated list of object names.
-
-                Rules:
-                - Each object only once
-                - No duplicates
-                - No counts
-                - No descriptions
-                - No explanations
-                - Use short common object names
-                - Do not hallucinate
-
-                Example:
-                person. chair. table. laptop. phone. bottle.
-                """,
-                "images": [image_path],
+                "content": "List the objects in this image as a comma-separated list. Only names, nothing else.",
+                "images": [img_b64],
             }
         ],
         options={
@@ -136,6 +132,10 @@ def identify_objects(image_path: str) -> str:
     )
     
     answer = response["message"]["content"].strip()
-    logger.info(f"[identify] Vision model detected: {answer}")
+    logger.info(f"[identify] Vision model raw output: '{answer}'")
+    
+    if not answer:
+        logger.warning("[identify] Vision model returned empty response")
+        return ""
     
     return answer
