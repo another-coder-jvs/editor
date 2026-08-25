@@ -19,7 +19,7 @@ subprocess.run(
 print("\nStarting Ollama server...")
 
 # Kill any existing ollama process
-subprocess.run("pkill -f 'ollama serve' || true", shell=True, check=False)
+# subprocess.run("pkill -f 'ollama serve' || true", shell=True, check=False)
 
 # Start ollama serve in background
 subprocess.Popen(

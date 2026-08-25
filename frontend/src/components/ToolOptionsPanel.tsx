@@ -52,11 +52,12 @@ export const ToolOptionsPanel: React.FC = () => {
             <span className="text-xs text-white w-10 text-right">{Math.round(toolOptions.brushHardness * 100)}%</span>
           </Row>
         )}
-        {activeTool === 'clone' && (
-          <p className="text-xs text-gray-500 mt-2">Alt+Click to set clone source, then paint to clone.</p>
-        )}
-        {activeTool === 'heal' && (
-          <p className="text-xs text-gray-500 mt-2">Paint over blemishes to heal them.</p>
+        {(activeTool === 'clone' || activeTool === 'heal') && (
+          <p className="text-xs text-gray-500 mt-2">
+            1. Alt+Click on the image to pick the source area.<br />
+            2. Click/drag where you want it copied — both pointers move together.<br />
+            {activeTool === 'heal' ? 'Heal blends the copied texture softly.' : 'Alt+Click again to re-pick the source.'}
+          </p>
         )}
       </div>
     )

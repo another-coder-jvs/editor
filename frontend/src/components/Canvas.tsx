@@ -210,6 +210,7 @@ export const Canvas: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
+  const guideRef = useRef<HTMLCanvasElement>(null)
   const selectionRef = useRef<HTMLCanvasElement>(null)
   const cropRef = useRef<HTMLCanvasElement>(null)
 
@@ -218,7 +219,7 @@ export const Canvas: React.FC = () => {
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 })
 
   // Activate drawing hooks
-  useCanvasDraw(overlayRef, canvasWidth, canvasHeight, canvasScale)
+  useCanvasDraw(overlayRef, canvasWidth, canvasHeight, canvasScale, guideRef)
   const { cropRect, applyCrop } = useCanvasCrop(cropRef, canvasWidth, canvasHeight, canvasScale)
   const { selection } = useCanvasSelect(selectionRef, canvasWidth, canvasHeight, canvasScale, () => {})
 
@@ -574,6 +575,14 @@ export const Canvas: React.FC = () => {
           width={canvasWidth}
           height={canvasHeight}
           style={{ position: 'absolute', inset: 0, pointerEvents: overlayPointerEvents, zIndex: 10000 }}
+        />
+
+        {/* Clone/heal source & target guide markers */}
+        <canvas
+          ref={guideRef}
+          width={canvasWidth}
+          height={canvasHeight}
+          style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 10003 }}
         />
 
         {/* Selection overlay canvas */}

@@ -118,7 +118,7 @@ const ToolOptions: React.FC = () => {
           <span className="text-xs text-white w-8 text-right">{Math.round(toolOptions.brushHardness * 100)}%</span>
         </Row>
       )}
-      {activeTool === 'clone' && <p className="text-xs text-gray-600">Alt+Click to set source</p>}
+      {(activeTool === 'clone' || activeTool === 'heal') && <p className="text-xs text-gray-600">Alt+Click sets source, then drag to copy</p>}
     </div>
   )
 

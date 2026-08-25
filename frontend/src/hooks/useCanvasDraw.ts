@@ -39,6 +39,7 @@ export function useCanvasDraw(
   canvasWidth: number,
   canvasHeight: number,
   canvasScale: number,
+  guideRef?: React.RefObject<HTMLCanvasElement>,
 ) {
   const {
     activeTool, toolOptions, layers,
@@ -46,6 +47,9 @@ export function useCanvasDraw(
   } = useEditorStore()
 
   const drawing = useRef(false)
+  // Composite snapshot of all visible layers — source pixels for clone/heal
+  const compositeRef = useRef<HTMLCanvasElement | null>(null)
+  const hoverPos = useRef<{ x: number; y: number } | null>(null)
   const lastPos = useRef<{ x: number; y: number } | null>(null)
   const shapeStart = useRef<{ x: number; y: number } | null>(null)
   const snapshotRef = useRef<ImageData | null>(null)
@@ -66,6 +70,39 @@ export function useCanvasDraw(
     const canvas = overlayRef.current
     return canvas ? canvas.getContext('2d') : null
   }, [overlayRef])
+
+  // Step 1: snapshot all visible layers into an offscreen canvas so clone/heal
+  // can copy REAL image pixels (the overlay canvas itself is transparent).
+  const rebuildComposite = useCallback(async () => {
+    if (activeTool !== 'clone' && activeTool !== 'heal') return
+    const c = document.createElement('canvas')
+    c.width = canvasWidth
+    c.height = canvasHeight
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+
+    const sorted = [...layers].filter(l => l.visible && l.png_path).sort((a, b) => a.z_index - b.z_index)
+    for (const l of sorted) {
+      const url = l.png_path.startsWith('blob:') || l.png_path.startsWith('data:')
+        ? l.png_path
+        : `${API_BASE}${l.png_path}`
+      const img = await loadImageSafe(url)
+      if (!img) continue
+      ctx.save()
+      ctx.globalAlpha = l.opacity ?? 1
+      ctx.translate(
+        l.bbox.x + l.position.x + l.bbox.width / 2,
+        l.bbox.y + l.position.y + l.bbox.height / 2,
+      )
+      ctx.rotate(((l.rotation || 0) * Math.PI) / 180)
+      ctx.scale(l.scale?.x ?? 1, l.scale?.y ?? 1)
+      ctx.drawImage(img, -l.bbox.width / 2, -l.bbox.height / 2, l.bbox.width, l.bbox.height)
+      ctx.restore()
+    }
+    compositeRef.current = c
+  }, [activeTool, layers, canvasWidth, canvasHeight])
+
+  useEffect(() => { rebuildComposite() }, [rebuildComposite])
 
   const isFullCanvasDrawLayer = useCallback((layer: typeof layers[number]) =>
     layer.bbox.x === 0 &&
@@ -229,6 +266,100 @@ export function useCanvasDraw(
     ctx.restore()
   }, [activeTool, toolOptions])
 
+  // Step 2: copy a soft-edged circular patch from the composite (source)
+  // onto the overlay at the target position.
+  const stampClone = useCallback((ctx: CanvasRenderingContext2D, target: { x: number; y: number }) => {
+    const comp = compositeRef.current
+    if (!comp || !cloneOffset.current) return
+
+    const isHeal = activeTool === 'heal'
+    const size = Math.max(4, toolOptions.brushSize)
+    const r = size / 2
+    const srcX = Math.round(target.x - cloneOffset.current.x)
+    const srcY = Math.round(target.y - cloneOffset.current.y)
+
+    // Draw sampled patch into a temp canvas
+    const tmp = document.createElement('canvas')
+    tmp.width = size
+    tmp.height = size
+    const tctx = tmp.getContext('2d')!
+    if (isHeal) tctx.filter = 'blur(1.5px)' // heal: soften texture so it blends
+    tctx.drawImage(comp, srcX - r, srcY - r, size, size, 0, 0, size, size)
+    tctx.filter = 'none'
+
+    // Radial feather mask (heal gets a softer edge to blend with surroundings)
+    const feather = isHeal ? 0.35 : 0.7
+    const grad = tctx.createRadialGradient(r, r, size * feather * 0.5, r, r, r)
+    grad.addColorStop(0, 'rgba(0,0,0,1)')
+    grad.addColorStop(1, 'rgba(0,0,0,0)')
+    tctx.globalCompositeOperation = 'destination-in'
+    tctx.fillStyle = grad
+    tctx.fillRect(0, 0, size, size)
+    tctx.globalCompositeOperation = 'source-over'
+
+    ctx.save()
+    ctx.globalAlpha = isHeal ? toolOptions.brushOpacity * 0.85 : toolOptions.brushOpacity
+    ctx.drawImage(tmp, target.x - r, target.y - r)
+    ctx.restore()
+  }, [activeTool, toolOptions])
+
+  // Step 3b: live guide — shows the source pointer & brush circle so the user
+  // can see exactly what will be copied where BEFORE committing.
+  const drawGuide = useCallback(() => {
+    const g = guideRef?.current
+    if (!g || (activeTool !== 'clone' && activeTool !== 'heal')) return
+    const gctx = g.getContext('2d')
+    if (!gctx) return
+    gctx.clearRect(0, 0, g.width, g.height)
+
+    const p = hoverPos.current
+    if (!p) return
+
+    const lw = 1.5 / canvasScale // keep screen-space thickness constant
+    const size = Math.max(4, toolOptions.brushSize)
+    const r = size / 2
+
+    // Live sampled source follows the target once offset is locked
+    const srcNow = cloneOffset.current && cloneSource.current
+      ? { x: p.x - cloneOffset.current.x, y: p.y - cloneOffset.current.y }
+      : cloneSource.current
+
+    gctx.save()
+    gctx.lineWidth = lw
+
+    // Connector line between source and target
+    if (srcNow) {
+      gctx.strokeStyle = 'rgba(34,211,238,0.5)'
+      gctx.setLineDash([5 / canvasScale, 5 / canvasScale])
+      gctx.beginPath()
+      gctx.moveTo(srcNow.x, srcNow.y)
+      gctx.lineTo(p.x, p.y)
+      gctx.stroke()
+      gctx.setLineDash([])
+    }
+
+    // Source marker: crosshair + circle (what is being copied FROM)
+    if (srcNow) {
+      gctx.strokeStyle = 'rgba(250,204,21,0.95)' // yellow
+      gctx.beginPath()
+      gctx.arc(srcNow.x, srcNow.y, r, 0, Math.PI * 2)
+      gctx.stroke()
+      gctx.beginPath()
+      gctx.moveTo(srcNow.x - r * 1.6, srcNow.y); gctx.lineTo(srcNow.x - r * 0.6, srcNow.y)
+      gctx.moveTo(srcNow.x + r * 0.6, srcNow.y); gctx.lineTo(srcNow.x + r * 1.6, srcNow.y)
+      gctx.moveTo(srcNow.x, srcNow.y - r * 1.6); gctx.lineTo(srcNow.x, srcNow.y - r * 0.6)
+      gctx.moveTo(srcNow.x, srcNow.y + r * 0.6); gctx.lineTo(srcNow.x, srcNow.y + r * 1.6)
+      gctx.stroke()
+    }
+
+    // Target marker: cyan brush circle (where content will be painted)
+    gctx.strokeStyle = srcNow ? 'rgba(34,211,238,0.95)' : 'rgba(156,163,175,0.7)'
+    gctx.beginPath()
+    gctx.arc(p.x, p.y, r, 0, Math.PI * 2)
+    gctx.stroke()
+    gctx.restore()
+  }, [activeTool, canvasScale, toolOptions.brushSize, guideRef])
+
   const onMouseDown = useCallback((e: MouseEvent) => {
     const DRAW_TOOLS = ['brush', 'pencil', 'marker', 'eraser', 'clone', 'heal',
       'shape_rect', 'shape_ellipse', 'shape_line', 'shape_arrow', 'shape_triangle', 'shape_star']
@@ -248,18 +379,27 @@ export function useCanvasDraw(
       return
     }
 
-    if (activeTool === 'clone') {
-      if (e.altKey) {
+    if (activeTool === 'clone' || activeTool === 'heal') {
+      if (e.altKey || e.shiftKey) {
+        // Set the source pointer — pixels will be copied FROM here
         cloneSource.current = pos
+        cloneOffset.current = null
+        e.stopPropagation()
+        e.preventDefault()
         return
       }
-      if (cloneSource.current) {
-        cloneOffset.current = { x: pos.x - cloneSource.current.x, y: pos.y - cloneSource.current.y }
+      if (!cloneSource.current) {
+        // No source set yet — do nothing (don't paint a random brush stroke)
+        return
       }
+      // Lock offset: target - source. Both pointers move together while dragging.
+      cloneOffset.current = { x: pos.x - cloneSource.current.x, y: pos.y - cloneSource.current.y }
+      stampClone(ctx, pos)
+      return
     }
 
     drawBrushStroke(ctx, pos, pos)
-  }, [activeTool, getPos, getCtx, drawBrushStroke, canvasWidth, canvasHeight])
+  }, [activeTool, getPos, getCtx, drawBrushStroke, stampClone, canvasWidth, canvasHeight])
 
   const onMouseMove = useCallback((e: MouseEvent) => {
     if (!drawing.current) return
@@ -274,20 +414,15 @@ export function useCanvasDraw(
       return
     }
 
-    if (activeTool === 'clone' && cloneSource.current && cloneOffset.current) {
-      const srcX = pos.x - cloneOffset.current.x
-      const srcY = pos.y - cloneOffset.current.y
-      const size = toolOptions.brushSize
-      ctx.save()
-      ctx.globalAlpha = toolOptions.brushOpacity
-      ctx.drawImage(overlayRef.current!, srcX - size / 2, srcY - size / 2, size, size, pos.x - size / 2, pos.y - size / 2, size, size)
-      ctx.restore()
+    if ((activeTool === 'clone' || activeTool === 'heal') && cloneSource.current && cloneOffset.current) {
+      // Both pointers move together: source follows target at fixed offset
+      stampClone(ctx, pos)
     } else if (lastPos.current) {
       drawBrushStroke(ctx, lastPos.current, pos)
     }
 
     lastPos.current = pos
-  }, [activeTool, getPos, getCtx, drawBrushStroke, drawShape, toolOptions, overlayRef])
+  }, [activeTool, getPos, getCtx, drawBrushStroke, drawShape, stampClone, overlayRef])
 
   const onMouseUp = useCallback(async (e: MouseEvent) => {
     if (!drawing.current) return
@@ -321,6 +456,36 @@ export function useCanvasDraw(
       window.removeEventListener('mouseup', onMouseUp)
     }
   }, [onMouseDown, onMouseMove, onMouseUp, overlayRef])
+
+  // Guide overlay: track hover position for clone/heal and redraw markers
+  useEffect(() => {
+    const onHoverMove = (e: MouseEvent) => {
+      if (activeTool !== 'clone' && activeTool !== 'heal') return
+      const canvas = overlayRef.current
+      if (!canvas) return
+      const rect = canvas.getBoundingClientRect()
+      hoverPos.current = {
+        x: (e.clientX - rect.left) / canvasScale,
+        y: (e.clientY - rect.top) / canvasScale,
+      }
+      drawGuide()
+    }
+    const clearGuide = () => {
+      hoverPos.current = null
+      const g = guideRef?.current
+      const gctx = g?.getContext('2d')
+      if (g && gctx) gctx.clearRect(0, 0, g.width, g.height)
+    }
+    const onLeave = () => { clearGuide() }
+    window.addEventListener('mousemove', onHoverMove)
+    const container = overlayRef.current?.parentElement ?? null
+    container?.addEventListener('mouseleave', onLeave)
+    return () => {
+      window.removeEventListener('mousemove', onHoverMove)
+      container?.removeEventListener('mouseleave', onLeave)
+      clearGuide()
+    }
+  }, [activeTool, canvasScale, overlayRef, guideRef, drawGuide])
 
   // Color picker
   const pickColor = useCallback((e: MouseEvent) => {

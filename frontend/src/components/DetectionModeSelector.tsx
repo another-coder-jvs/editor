@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react'
-import { Eye, Pencil, Loader2, Sparkles, X } from 'lucide-react'
+import { Eye, Pencil, Sparkles, X } from 'lucide-react'
 
 type DetectionMode = 'auto' | 'manual'
 
@@ -23,7 +23,6 @@ export const DetectionModeSelector: React.FC<Props> = ({
   const handleAutoDetect = useCallback(() => {
     setMode('auto')
     setScanning(true)
-    // Empty prompt = backend uses Ollama vision → fallback prompt
     onDetect('')
   }, [onDetect])
 
@@ -46,27 +45,50 @@ export const DetectionModeSelector: React.FC<Props> = ({
             className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-2xl"
           />
 
-          {/* Scanning animation overlay */}
+          {/* Scanning overlay */}
           {scanning && (
             <div className="absolute inset-0 rounded-lg overflow-hidden pointer-events-none">
               {/* Dark overlay */}
-              <div className="absolute inset-0 bg-dark-900/60" />
+              <div className="absolute inset-0 bg-dark-900/50 backdrop-blur-[1px]" />
 
-              {/* Scanning line */}
-              <div className="scan-line absolute inset-x-0 h-0.5 bg-gradient-to-r from-transparent via-accent to-transparent shadow-[0_0_15px_3px_rgba(99,102,241,0.6)]" />
+              {/* Animated grid */}
+              <div className="scan-grid absolute inset-0 opacity-20" />
 
-              {/* Corner brackets */}
-              <div className="absolute top-3 left-3 w-8 h-8 border-t-2 border-l-2 border-accent rounded-tl-lg" />
-              <div className="absolute top-3 right-3 w-8 h-8 border-t-2 border-r-2 border-accent rounded-tr-lg" />
-              <div className="absolute bottom-3 left-3 w-8 h-8 border-b-2 border-l-2 border-accent rounded-bl-lg" />
-              <div className="absolute bottom-3 right-3 w-8 h-8 border-b-2 border-r-2 border-accent rounded-br-lg" />
+              {/* Main sweep line */}
+              <div className="scan-sweep absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_30px_8px_rgba(34,211,238,0.5)]" />
 
-              {/* Status text */}
-              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-dark-800/90 px-4 py-2 rounded-full border border-dark-600">
-                <Loader2 size={14} className="animate-spin text-accent" />
-                <span className="text-xs text-gray-300">
-                  {mode === 'auto' ? 'AI is analyzing the image...' : 'Detecting objects...'}
+              {/* Trailing glow */}
+              <div className="scan-trail absolute inset-x-0 h-16 bg-gradient-to-b from-cyan-400/20 via-cyan-400/5 to-transparent" />
+
+              {/* Corner brackets - animated */}
+              <div className="scan-corners">
+                <div className="corner-tl" />
+                <div className="corner-tr" />
+                <div className="corner-bl" />
+                <div className="corner-br" />
+              </div>
+
+              {/* Pulse rings */}
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+                <div className="pulse-ring pulse-ring-1" />
+                <div className="pulse-ring pulse-ring-2" />
+                <div className="pulse-ring pulse-ring-3" />
+              </div>
+
+              {/* Status badge */}
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-dark-800/95 px-5 py-2.5 rounded-full border border-cyan-500/30 shadow-[0_0_20px_rgba(34,211,238,0.2)]">
+                <div className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-400" />
+                </div>
+                <span className="text-xs text-cyan-100 font-medium tracking-wide">
+                  {mode === 'auto' ? 'AI VISION ANALYZING' : 'DETECTING OBJECTS'}
                 </span>
+                <div className="flex gap-0.5">
+                  <span className="loading-dot loading-dot-1 w-1 h-1 rounded-full bg-cyan-400" />
+                  <span className="loading-dot loading-dot-2 w-1 h-1 rounded-full bg-cyan-400" />
+                  <span className="loading-dot loading-dot-3 w-1 h-1 rounded-full bg-cyan-400" />
+                </div>
               </div>
             </div>
           )}
@@ -148,15 +170,112 @@ export const DetectionModeSelector: React.FC<Props> = ({
         </div>
       )}
 
-      {/* CSS for scan line animation */}
+      {/* Scan Animation Styles */}
       <style>{`
-        .scan-line {
-          animation: scan 2s ease-in-out infinite;
+        /* Grid background */
+        .scan-grid {
+          background-image:
+            linear-gradient(rgba(34, 211, 238, 0.3) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(34, 211, 238, 0.3) 1px, transparent 1px);
+          background-size: 40px 40px;
+          animation: gridMove 3s linear infinite;
         }
-        @keyframes scan {
-          0% { top: 0; }
-          50% { top: 100%; }
-          100% { top: 0; }
+
+        @keyframes gridMove {
+          0% { background-position: 0 0; }
+          100% { background-position: 40px 40px; }
+        }
+
+        /* Main sweep line */
+        .scan-sweep {
+          animation: sweep 2.5s ease-in-out infinite;
+        }
+
+        @keyframes sweep {
+          0% { top: 0%; opacity: 0; }
+          10% { opacity: 1; }
+          90% { opacity: 1; }
+          100% { top: 100%; opacity: 0; }
+        }
+
+        /* Trailing glow */
+        .scan-trail {
+          animation: sweep 2.5s ease-in-out infinite;
+        }
+
+        /* Corner brackets */
+        .scan-corners .corner-tl,
+        .scan-corners .corner-tr,
+        .scan-corners .corner-bl,
+        .scan-corners .corner-br {
+          position: absolute;
+          width: 40px;
+          height: 40px;
+          border-color: rgb(34, 211, 238);
+          animation: cornerPulse 2s ease-in-out infinite;
+        }
+
+        .corner-tl {
+          top: 16px; left: 16px;
+          border-top: 2px solid;
+          border-left: 2px solid;
+          border-radius: 8px 0 0 0;
+        }
+        .corner-tr {
+          top: 16px; right: 16px;
+          border-top: 2px solid;
+          border-right: 2px solid;
+          border-radius: 0 8px 0 0;
+        }
+        .corner-bl {
+          bottom: 16px; left: 16px;
+          border-bottom: 2px solid;
+          border-left: 2px solid;
+          border-radius: 0 0 0 8px;
+        }
+        .corner-br {
+          bottom: 16px; right: 16px;
+          border-bottom: 2px solid;
+          border-right: 2px solid;
+          border-radius: 0 0 8px 0;
+        }
+
+        @keyframes cornerPulse {
+          0%, 100% { opacity: 0.5; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.05); }
+        }
+
+        /* Pulse rings */
+        .pulse-ring {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          border: 1px solid rgba(34, 211, 238, 0.4);
+          border-radius: 50%;
+          animation: pulseExpand 3s ease-out infinite;
+        }
+
+        .pulse-ring-1 { animation-delay: 0s; }
+        .pulse-ring-2 { animation-delay: 1s; }
+        .pulse-ring-3 { animation-delay: 2s; }
+
+        @keyframes pulseExpand {
+          0% { width: 0; height: 0; opacity: 0.8; }
+          100% { width: 300px; height: 300px; opacity: 0; }
+        }
+
+        /* Loading dots */
+        .loading-dot {
+          animation: dotBounce 1.4s ease-in-out infinite;
+        }
+        .loading-dot-1 { animation-delay: 0s; }
+        .loading-dot-2 { animation-delay: 0.2s; }
+        .loading-dot-3 { animation-delay: 0.4s; }
+
+        @keyframes dotBounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+          40% { transform: translateY(-4px); opacity: 1; }
         }
       `}</style>
     </div>
