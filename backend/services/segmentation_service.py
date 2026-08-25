@@ -20,6 +20,10 @@ from services.background_detector import (
     create_background_mask,
     analyze_and_create_masks,
 )
+from services.flux_inpaint_service import (
+    reconstruct_background_with_flux,
+    create_object_removal_mask,
+)
 from schemas import BoundingBox, LayerData
  
 from utils import config
@@ -138,6 +142,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     # Accumulate all refined masks to compute the unrecognized remainder
     img_h, img_w = image_np.shape[:2]
     combined_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+    all_refined_masks: List[np.ndarray] = []
 
     # Sanitize label for use in filename
     def safe_label(lbl: str) -> str:
@@ -179,6 +184,9 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
             logger.warning(f"[segmentation] SAM2 failed for '{label}': {e} — using bbox fallback")
             raw_mask = _bbox_mask(image_np.shape[:2], bbox)
         refined = refine_mask(raw_mask)
+
+        # Track all refined masks for background reconstruction
+        all_refined_masks.append(refined)
 
         # Accumulate into combined mask (any pixel > 128 is "recognized")
         combined_mask = np.maximum(combined_mask, (refined > 128).astype(np.uint8) * 255)
@@ -223,28 +231,85 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         logger.info(f"[segmentation] layer '{label}' created: id={layer_id}")
 
     # --- Background Layer ────────────────────────────────────────────────────
-    # Use analyzed background mask or create from remainder
+    # Step 1: Create the mask for regions that need generative fill
+    # This is the INVERSE of the combined mask — the area where objects were removed
+    removal_mask = cv2.bitwise_not(combined_mask)  # pixels NOT covered by any object
+
+    # Also include the actual object regions to fill (the empty space left behind)
+    # The combined_mask covers detected object pixels — we want to fill those gaps
+    inpaint_mask = create_object_removal_mask(
+        image_np.shape[:2],
+        [refined for refined in all_refined_masks],  # all object masks
+        dilate_pixels=12,  # expand to cover feathered edges
+    )
+
+    logger.info(
+        f"[segmentation] inpaint mask: {int(np.sum(inpaint_mask > 0))} pixels to fill generatively"
+    )
+
+    # Step 2: Use FLUX.1 Fill to generatively reconstruct the background
+    # CRITICAL: This uses ONLY generative creation — never the original cutout pixels
+    reconstructed_image = image_pil.copy()  # fallback to original
+
+    if np.any(inpaint_mask > 128):
+        try:
+            logger.info("[segmentation] calling FLUX.1 Fill for background reconstruction...")
+            reconstructed_image = reconstruct_background_with_flux(
+                original_image=image_pil,
+                combined_mask=inpaint_mask,
+                prompt="clean background, natural scene, empty area, no objects",
+                num_inference_steps=20,
+                guidance_scale=3.5,
+            )
+            logger.info("[segmentation] FLUX.1 Fill background reconstruction complete")
+        except Exception as e:
+            logger.warning(
+                f"[segmentation] FLUX.1 Fill failed ({e}), "
+                f"falling back to LaMa inpainting for background reconstruction"
+            )
+            # Fallback: LaMa inpainting (still generative, not original cutout)
+            try:
+                from services.inpaint_service import inpaint_background
+                reconstructed_image = inpaint_background(
+                    image_pil, inpaint_mask, dilate=15
+                )
+                logger.info("[segmentation] LaMa fallback background reconstruction complete")
+            except Exception as e2:
+                logger.warning(
+                    f"[segmentation] LaMa also failed ({e2}), "
+                    f"using cv2 inpainting as last resort"
+                )
+                from services.inpaint_service import cv2_inpaint
+                reconstructed_image = cv2_inpaint(image_pil, inpaint_mask)
+
+        # Free FLUX model immediately after use to reclaim VRAM
+        try:
+            model_manager.unload_flux_fill_pipe()
+        except Exception:
+            pass
+
+    # Step 3: Create the background layer from the RECONSTRUCTED image
+    # (not the original — this ensures no cutout pixels leak into the background)
+    reconstructed_np = np.array(reconstructed_image)
+
+    # Create a clean background mask (area around objects where reconstruction was applied)
     if bg_mask is not None and np.sum(bg_mask > 0) > 0:
-        # Use the analyzed background mask
-        logger.info("[segmentation] using analyzed background mask")
+        logger.info("[segmentation] using analyzed background mask for layer mask")
         background_mask = bg_mask
     else:
-        # Fallback: create from remainder of objects
-        logger.info("[segmentation] creating background mask from remainder")
-        background_mask = cv2.bitwise_not(combined_mask)  # pixels not covered by any object
-    
-    # Remove tiny disconnected blobs (shadow noise, compression artifacts)
-    # Keep only connected components larger than 0.5% of total image area
+        # Use the removal mask (inverse of object coverage) as background mask
+        background_mask = removal_mask
+
+    # Clean up small blobs
     min_area = int(img_h * img_w * 0.005)
     num_labels, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
         (background_mask > 128).astype(np.uint8), connectivity=8
     )
     clean_background = np.zeros_like(background_mask)
-    for cc_idx in range(1, num_labels):  # skip background (0)
+    for cc_idx in range(1, num_labels):
         if stats[cc_idx, cv2.CC_STAT_AREA] >= min_area:
             clean_background[cc_labels == cc_idx] = 255
 
-    # Use the larger of analyzed mask vs remainder for better coverage
     if bg_mask is not None:
         clean_background = np.maximum(clean_background, bg_mask)
 
@@ -260,7 +325,8 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
 
         Image.fromarray(clean_background).save(str(mask_file))
 
-        rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
+        # Create RGBA layer from the RECONSTRUCTED image (not original!)
+        rgba = cv2.cvtColor(reconstructed_np, cv2.COLOR_RGB2RGBA)
         rgba[:, :, 3] = clean_background
         Image.fromarray(rgba).save(str(png_file), optimize=False)
 
@@ -275,7 +341,10 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
             visible=True,
             opacity=1.0,
         ))
-        logger.info(f"[segmentation] background layer created: type={bg_analysis.bg_type.value}")
+        logger.info(
+            f"[segmentation] background layer created (FLUX reconstructed): "
+            f"type={bg_analysis.bg_type.value}, method=flux_fill"
+        )
 
     # Save session metadata for cache restore
     meta = {

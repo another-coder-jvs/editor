@@ -81,6 +81,7 @@ class ModelManager:
         self._rembg_session = None
         self._realesrgan = None
         self._img2img_pipe = None
+        self._flux_fill_pipe = None
         self._last_used = time.time()
         self._idle_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
@@ -112,6 +113,8 @@ class ModelManager:
             unloaded = []
             if self._inpaint_pipe is not None:
                 del self._inpaint_pipe; self._inpaint_pipe = None; unloaded.append("inpaint")
+            if self._flux_fill_pipe is not None:
+                del self._flux_fill_pipe; self._flux_fill_pipe = None; unloaded.append("flux_fill")
             if self._img2img_pipe is not None:
                 del self._img2img_pipe; self._img2img_pipe = None; unloaded.append("img2img")
             if self._grounding_dino is not None:
@@ -158,6 +161,44 @@ class ModelManager:
             if DEVICE == "cuda":
                 torch.cuda.empty_cache()
             logger.info("[model_manager] SDXL inpaint pipeline unloaded")
+
+    # ── FLUX.1 Fill ────────────────────────────────────────────────────────────
+    def get_flux_fill_pipe(self):
+        if self._flux_fill_pipe is None:
+            logger.info("[model_manager] Loading FLUX.1 Fill pipeline…")
+            self._flux_fill_pipe = self._load_flux_fill()
+        self.touch()
+        return self._flux_fill_pipe
+
+    def _load_flux_fill(self):
+        from diffusers import FluxFillPipeline
+        logger.info("[model_manager] Loading FLUX.1 Fill (black-forest-labs/FLUX.1-fill-dev)…")
+        pipe = FluxFillPipeline.from_pretrained(
+            "black-forest-labs/FLUX.1-fill-dev",
+            torch_dtype=torch.bfloat16 if DEVICE == "cuda" else torch.float32,
+            cache_dir=str(WEIGHTS_DIR / "flux_fill"),
+        )
+        if DEVICE == "cuda":
+            pipe.to(DEVICE)
+            # Enable memory optimizations for FLUX (large model ~12B params)
+            try:
+                pipe.enable_model_cpu_offload()
+                logger.info("[model_manager] FLUX.1 Fill: model_cpu_offload enabled")
+            except Exception:
+                logger.info("[model_manager] FLUX.1 Fill: using full GPU")
+        else:
+            pipe.to("cpu")
+        logger.info("[model_manager] FLUX.1 Fill loaded")
+        return pipe
+
+    def unload_flux_fill_pipe(self):
+        if self._flux_fill_pipe is not None:
+            del self._flux_fill_pipe
+            self._flux_fill_pipe = None
+            gc.collect()
+            if DEVICE == "cuda":
+                torch.cuda.empty_cache()
+            logger.info("[model_manager] FLUX.1 Fill pipeline unloaded")
 
     # ── Grounding DINO ────────────────────────────────────────────────────────
     def get_grounding_dino(self):

@@ -8,7 +8,7 @@ pydantic==2.7.4
 torch>=2.3.0
 torchvision>=0.18.0
 transformers>=4.42.0
-diffusers>=0.29.0
+diffusers>=0.30.0  # FLUX.1 Fill support requires >= 0.30
 accelerate>=0.31.0
 safetensors>=0.4.3
 
