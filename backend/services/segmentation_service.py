@@ -91,9 +91,92 @@ def mask_to_transparent_png(image: np.ndarray, mask: np.ndarray, bbox: Dict[str,
     logger.debug(f"[segmentation] saved transparent PNG → {out_path}")
 
 
+def _segment_objects_remote(
+    session_id: str, image_path: str, objects: List[Dict[str, Any]]
+) -> List["LayerData"]:
+    """
+    Remote segmentation: calls cloud SAM2 API for each detected object,
+    then applies the same mask refinement and layer building as the local path.
+    """
+    from services.remote_services.segmentation import segment_object_remote
+
+    p = Path(image_path)
+    if not p.is_absolute():
+        rel = str(image_path).lstrip("/")
+        if rel.startswith("temp/"):
+            rel = rel[len("temp/"):]
+        p = (TEMP_DIR / rel).resolve()
+
+    if not p.exists():
+        raise FileNotFoundError(f"Image not found: {p}")
+
+    image_pil = Image.open(p).convert("RGB")
+    image_np  = np.array(image_pil)
+    img_h, img_w = image_np.shape[:2]
+
+    session_dir = TEMP_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    def safe_label(lbl: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in lbl.strip())
+
+    layers: List[LayerData] = []
+
+    for idx, obj in enumerate(objects):
+        bbox  = obj["bbox"]
+        label = obj["label"]
+        logger.info(f"[segmentation/remote] [{idx+1}/{len(objects)}] '{label}'")
+
+        try:
+            raw_mask = segment_object_remote(str(p), bbox, (img_w, img_h))
+        except Exception as e:
+            logger.warning(f"[segmentation/remote] API failed for '{label}': {e} — bbox fallback")
+            raw_mask = _bbox_mask(image_np.shape[:2], bbox)
+
+        refined = refine_mask(raw_mask)
+
+        layer_id   = f"{session_id}_{idx}_{uuid.uuid4().hex[:6]}"
+        label_slug = safe_label(label)
+        mask_name  = f"{layer_id}_{label_slug}_mask.png"
+        png_name   = f"{layer_id}_{label_slug}_layer.png"
+        mask_file  = session_dir / mask_name
+        png_file   = session_dir / png_name
+
+        Image.fromarray(refined).save(str(mask_file))
+        mask_to_transparent_png(image_np, refined, bbox, png_file)
+
+        FP = 8
+        expanded_bbox = {
+            "x":      float(max(0,     int(bbox["x"]) - FP)),
+            "y":      float(max(0,     int(bbox["y"]) - FP)),
+            "width":  float(min(img_w, int(bbox["x"]) + int(bbox["width"])  + FP) - max(0, int(bbox["x"]) - FP)),
+            "height": float(min(img_h, int(bbox["y"]) + int(bbox["height"]) + FP) - max(0, int(bbox["y"]) - FP)),
+        }
+
+        layers.append(LayerData(
+            id=layer_id,
+            name=label,
+            mask_path=f"/temp/{session_id}/{mask_name}",
+            png_path=f"/temp/{session_id}/{png_name}",
+            bbox=BoundingBox(**expanded_bbox),
+            z_index=len(objects) - idx,
+            visible=True,
+            opacity=1.0,
+        ))
+        logger.info(f"[segmentation/remote] layer '{label}' created: id={layer_id}")
+
+    return layers
+
+
 def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, Any]]) -> List[LayerData]:
     logger.info(f"[segmentation] session={session_id} objects={len(objects)} image={image_path}")
 
+    # ── Remote mode: use cloud SAM2 API per object ────────────────────────────
+    from services.remote_config import remote_cfg
+    if remote_cfg.COMPUTE_MODE == "remote":
+        return _segment_objects_remote(session_id, image_path, objects)
+
+    # ── Local mode (unchanged below) ─────────────────────────────────────────
     logger.info("[segmentation] loading SAM2 predictor…")
     predictor = model_manager.get_sam2()
 

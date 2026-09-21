@@ -56,6 +56,24 @@ def reconstruct_background_with_flux(
         f"(image={original_image.size}, mask_white_pixels={int(np.sum(combined_mask > 0))})"
     )
 
+    # ── Remote mode: use cloud inpainting API ────────────────────────────────
+    from services.remote_config import remote_cfg
+    if remote_cfg.COMPUTE_MODE == "remote":
+        logger.info("[flux_inpaint] COMPUTE_MODE=remote — using remote inpainting API")
+        from services.remote_services.inpaint import inpaint_remote
+        from PIL import Image as _Image
+        mask_bin_remote = (combined_mask > 128).astype(np.uint8) * 255
+        if not np.any(mask_bin_remote):
+            return original_image.copy()
+        mask_alpha = _Image.fromarray(mask_bin_remote, mode="L")
+        layer_rgba = original_image.convert("RGBA")
+        layer_rgba.putalpha(mask_alpha)
+        result = inpaint_remote(layer_rgba, prompt, strength=0.99,
+                                guidance_scale=guidance_scale, steps=num_inference_steps)
+        return result.convert("RGB").resize(original_image.size, _Image.LANCZOS)
+
+    # ── Local mode (unchanged below) ─────────────────────────────────────────
+
     # Ensure mask is uint8 binary
     mask_bin = (combined_mask > 128).astype(np.uint8) * 255
 

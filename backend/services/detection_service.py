@@ -102,6 +102,15 @@ def detect_objects(
     text_threshold: float = 0.25,
 ) -> List[Dict[str, Any]]:
     logger.info(f"[detection] loading image: {image_path}")
+
+    # ── Remote mode: delegate entirely to the remote detection service ────────
+    from services.remote_config import remote_cfg
+    if remote_cfg.COMPUTE_MODE == "remote":
+        logger.info("[detection] COMPUTE_MODE=remote — using remote detection API")
+        from services.remote_services.detection import detect_objects_remote
+        return detect_objects_remote(image_path, prompt, box_threshold, text_threshold)
+
+    # ── Local mode (unchanged below) ─────────────────────────────────────────
     image = Image.open(image_path).convert("RGB")
     w, h = image.size
     logger.info(f"[detection] image size: {w}x{h}")

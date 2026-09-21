@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any, Dict
 
-from services.model_manager import model_manager
+from services.model_manager import get_llm as _get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def parse_edit_prompt(user_prompt: str, layer_name: str) -> Dict[str, Any]:
     # Try LLM first
     try:
         logger.info("[prompt] calling LLM…")
-        llm = model_manager.get_llm()
+        llm = _get_llm()
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Layer: {layer_name}\nUser instruction: {user_prompt}"},

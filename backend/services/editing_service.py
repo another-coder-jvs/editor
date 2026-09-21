@@ -298,9 +298,8 @@ def _saturation(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
 
 def _background_remove(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
     logger.info("[editing/background_remove] running rembg…")
-    from rembg import remove
-    session = model_manager.get_rembg_session()
-    result = remove(img, session=session)
+    from services.model_manager import run_rembg
+    result = run_rembg(img)
     logger.info("[editing/background_remove] done")
     return result
 
@@ -345,7 +344,16 @@ def _pixel_art(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
 
 def _upscale(img: Image.Image, params: Dict[str, Any]) -> Image.Image:
     scale = int(params.get("scale", 2))
-    logger.info(f"[editing/upscale] scale={scale}x with Real-ESRGAN")
+    logger.info(f"[editing/upscale] scale={scale}x")
+    from services.model_manager import run_upscale, _REMOTE
+    if _REMOTE:
+        result_rgb = run_upscale(img, scale)
+        result = result_rgb.convert("RGBA")
+        alpha = img.getchannel("A").resize(result.size, Image.LANCZOS)
+        result.putalpha(alpha)
+        logger.info(f"[editing/upscale] done (remote) → {result.size}")
+        return result
+    # local path unchanged
     upsampler = model_manager.get_realesrgan(scale)
     arr = np.array(img.convert("RGB"))
     out_arr, _ = upsampler.enhance(arr, outscale=scale)
@@ -396,6 +404,10 @@ def _inpaint(
     params: Dict[str, Any],
 ) -> Image.Image:
     logger.info(f"[editing/inpaint] prompt='{prompt}' strength={strength} steps={steps}")
+    from services.model_manager import run_inpaint, _REMOTE
+    if _REMOTE:
+        return run_inpaint(layer_img, prompt, strength, guidance_scale, steps)
+    # ── local path (unchanged) ────────────────────────────────────────────────
     pipe = model_manager.get_inpaint_pipe()
     orig_alpha = layer_img.getchannel("A")
     rgb = layer_img.convert("RGB")
@@ -426,6 +438,10 @@ def _style_transfer(
     params: Dict[str, Any],
 ) -> Image.Image:
     logger.info(f"[editing/style_transfer] prompt='{prompt}' strength={strength}")
+    from services.model_manager import run_img2img, _REMOTE
+    if _REMOTE:
+        return run_img2img(layer_img, prompt, strength, guidance_scale, steps)
+    # ── local path (unchanged) ────────────────────────────────────────────────
     logger.info("[editing/style_transfer] loading img2img pipeline...")
     result = _run_img2img_on_layer(layer_img, prompt, strength, guidance_scale, steps)
     logger.info("[editing/style_transfer] completed")
