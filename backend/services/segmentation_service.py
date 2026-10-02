@@ -339,7 +339,7 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
         try:
             logger.info("[segmentation] calling FLUX.1 Fill for background reconstruction...")
             flux_prompt = create_reasoned_fill_prompt(
-                image_pil, objects, background_analysis=bg_analysis
+                image_pil, objects, background_analysis=bg_analysis.model_dump() if hasattr(bg_analysis, "model_dump") else bg_analysis
             )
             logger.info(f"[segmentation] reasoned FLUX prompt: '{flux_prompt}'")
             reconstructed_image = reconstruct_background_with_flux(

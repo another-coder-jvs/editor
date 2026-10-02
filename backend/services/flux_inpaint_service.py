@@ -157,7 +157,7 @@ def create_reasoned_fill_prompt(
 
     # If known background analysis says it was a solid colour, bias prompt toward that
     if background_analysis:
-        bg_type = str(background_analysis.get("bg_type", ""))
+        bg_type = str(background_analysis.get("bg_type", "") if isinstance(background_analysis.get("bg_type"), str) else getattr(background_analysis.get("bg_type"), "value", str(background_analysis.get("bg_type"))))
         dominant = background_analysis.get("dominant_color")
         if bg_type == "nearly_solid" and dominant:
             r, g, b = (int(dominant[0]), int(dominant[1]), int(dominant[2]))
