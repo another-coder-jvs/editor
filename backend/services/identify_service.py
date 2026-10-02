@@ -16,7 +16,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")  # or bakllava, llava:13b
+VISION_MODEL = os.environ.get("VISION_MODEL", "llava:7b")  # e.g. llava:7b, llava:13b, minicpm-v4.6
 
 
 def _try_start_ollama() -> bool:

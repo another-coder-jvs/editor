@@ -63,6 +63,52 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
 
 
 
+def _is_degenerate_box(bbox: Dict[str, Any], img_w: int, img_h: int) -> bool:
+    if not bbox:
+        return True
+    x = float(bbox.get("x", 0))
+    y = float(bbox.get("y", 0))
+    w = float(bbox.get("width", 0))
+    h = float(bbox.get("height", 0))
+
+    x2 = max(0.0, min(float(img_w), x + w))
+    y2 = max(0.0, min(float(img_h), y + h))
+    x1 = max(0.0, min(float(img_w), x))
+    y1 = max(0.0, min(float(img_h), y))
+
+    box_area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+    image_area = float(img_w) * float(img_h)
+    if image_area <= 0:
+        return True
+    return (box_area / image_area) >= 0.98
+
+
+def _drop_redundant_objects(objects: List[Dict[str, Any]], img_w: int, img_h: int) -> List[Dict[str, Any]]:
+    if not objects:
+        return objects
+
+    filtered: List[Dict[str, Any]] = []
+    dropped_degenerate = 0
+    for obj in objects:
+        if _is_degenerate_box(obj.get("bbox"), img_w, img_h):
+            logger.warning(
+                f"[detection] dropping degenerate detection '{obj.get('label')}' "
+                f"bbox={obj.get('bbox')} (covers >= 98% of image)"
+            )
+            dropped_degenerate += 1
+            continue
+        filtered.append(obj)
+
+    if dropped_degenerate:
+        logger.info(f"[detection] dropped {dropped_degenerate} degenerate full-image detection(s)")
+
+    if not filtered:
+        logger.info("[detection] all detections were degenerate — returning empty object list")
+        return []
+
+    return filtered
+
+
 def _clean_ollama_prompt(raw: str) -> str:
     """Clean Ollama output into a valid Grounding DINO dot-separated prompt."""
     if not raw or not raw.strip():

@@ -334,11 +334,15 @@ class ModelManager:
                             "Fix options:\n"
                             "  1) Renew the HF token and reload the server, or\n"
                             "  2) Pre-download the model locally with:\n"
-                            "     python -m transformers.utils.huggingface_hub HfApi.download_repo(\n"
+                            "     python - <<'PY'\n"
+                            "     from huggingface_hub import snapshot_download\n"
+                            "     snapshot_download(\n"
                             "         repo_id='IDEA-Research/grounding-dino-base',\n"
                             "         repo_type='model',\n"
-                            "         local_dir='" + cache + "'\n"
+                            "         local_dir='" + cache + "',\n"
+                            "         local_dir_use_symlinks=False,\n"
                             "     )\n"
+                            "     PY\n"
                             "  3) Or run with COMPUTE_MODE=remote if a remote detection provider is configured."
                         )
                         raise
