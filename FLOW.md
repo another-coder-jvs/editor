@@ -721,3 +721,6 @@ backend/
   utils/
     config.py         ← path config (TEMP_DIR, WEIGHT_DIR, etc.)
 ```
+
+
+<!-- kiro-cli --resume-id 11542294-4c42-49db-a57f-7c0db66523ed -->
