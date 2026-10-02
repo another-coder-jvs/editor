@@ -21,8 +21,9 @@ from services.background_detector import (
     analyze_and_create_masks,
 )
 from services.flux_inpaint_service import (
-    reconstruct_background_with_flux,
+    create_reasoned_fill_prompt,
     create_object_removal_mask,
+    reconstruct_background_with_flux,
 )
 from schemas import BoundingBox, LayerData
  
@@ -337,10 +338,14 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
     if np.any(inpaint_mask > 128):
         try:
             logger.info("[segmentation] calling FLUX.1 Fill for background reconstruction...")
+            flux_prompt = create_reasoned_fill_prompt(
+                image_pil, objects, background_analysis=bg_analysis
+            )
+            logger.info(f"[segmentation] reasoned FLUX prompt: '{flux_prompt}'")
             reconstructed_image = reconstruct_background_with_flux(
                 original_image=image_pil,
                 combined_mask=inpaint_mask,
-                prompt="clean background, natural scene, empty area, no objects",
+                prompt=flux_prompt,
                 num_inference_steps=20,
                 guidance_scale=3.5,
             )
@@ -372,23 +377,31 @@ def segment_objects(session_id: str, image_path: str, objects: List[Dict[str, An
             pass
 
     # Step 3: Create the background layer from the RECONSTRUCTED image
+    # Prefer the mask that actually describes the inpainted region so the layer
+    # alpha matches generative content, not leftover placeholders.
     # (not the original — this ensures no cutout pixels leak into the background)
     reconstructed_np = np.array(reconstructed_image)
 
     # Create a clean background mask (area around objects where reconstruction was applied)
-    if bg_mask is not None and np.sum(bg_mask > 0) > 0:
+    # Prefer the FLUX-reconstructed inpaint region over the analysed colour mask when they
+    # diverge strongly. Otherwise the background layer can still contain the frozen original
+    # graphic/text block.
+    if inpaint_mask is not None and np.sum(inpaint_mask > 128) > 0:
+        background_mask_candidate = inpaint_mask
+        logger.info("[segmentation] using inpaint-based mask for background layer")
+    elif bg_mask is not None and np.sum(bg_mask > 0) > 0:
+        background_mask_candidate = bg_mask
         logger.info("[segmentation] using analyzed background mask for layer mask")
-        background_mask = bg_mask
     else:
-        # Use the removal mask (inverse of object coverage) as background mask
-        background_mask = removal_mask
+        background_mask_candidate = removal_mask
+        logger.info("[segmentation] using removal mask for background layer")
 
     # Clean up small blobs
     min_area = int(img_h * img_w * 0.005)
     num_labels, cc_labels, stats, _ = cv2.connectedComponentsWithStats(
-        (background_mask > 128).astype(np.uint8), connectivity=8
+        (background_mask_candidate > 128).astype(np.uint8), connectivity=8
     )
-    clean_background = np.zeros_like(background_mask)
+    clean_background = np.zeros_like(background_mask_candidate)
     for cc_idx in range(1, num_labels):
         if stats[cc_idx, cv2.CC_STAT_AREA] >= min_area:
             clean_background[cc_labels == cc_idx] = 255

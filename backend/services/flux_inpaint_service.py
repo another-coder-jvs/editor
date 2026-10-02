@@ -139,6 +139,41 @@ def reconstruct_background_with_flux(
     return result
 
 
+def create_reasoned_fill_prompt(
+    image: Image.Image,
+    objects: list[dict],
+    background_analysis: dict | None = None,
+) -> str:
+    """
+    Build a FLUX Fill prompt that is more likely to recreate a *plausible*
+    background when the removed objects leave large semantically empty regions.
+
+    This is intentionally used by segmentation_service when the canvas still
+    contains big empty rectangles / white blocks after the obvious object layers
+    have been removed. The goal is to avoid leaving the original placeholder
+    pixels in the background layer.
+    """
+    base = "clean background, natural scene continuation, empty area"
+
+    # If known background analysis says it was a solid colour, bias prompt toward that
+    if background_analysis:
+        bg_type = str(background_analysis.get("bg_type", ""))
+        dominant = background_analysis.get("dominant_color")
+        if bg_type == "nearly_solid" and dominant:
+            r, g, b = (int(dominant[0]), int(dominant[1]), int(dominant[2]))
+            base = (
+                f"clean background, natural scene continuation, empty area, "
+                f"dominant dark tone near rgb({r},{g},{b})"
+            )
+
+    # If there were very few real objects, the image may be mostly graphic design;
+    # encourage a plain neutral background instead of inventing scene details.
+    if len(objects) <= 2:
+        base = "clean background, neutral texture, empty area, no text, no icons"
+
+    return base
+
+
 def create_object_removal_mask(
     image_shape: tuple[int, int],
     object_masks: list[np.ndarray],

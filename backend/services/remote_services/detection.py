@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from PIL import Image as _PILImage
+
 from services.remote_config import remote_cfg
 from services.remote_services._http import (
     replicate_call,
@@ -45,6 +47,27 @@ def _iou(a: List[float], b: List[float]) -> float:
     return inter / (area_a + area_b - inter)
 
 
+def _is_degenerate_box(bbox: Dict[str, Any], img_w: int, img_h: int) -> bool:
+    """Remote equivalent of the local degenerate-box guard."""
+    if not bbox:
+        return True
+    x = float(bbox.get("x", 0))
+    y = float(bbox.get("y", 0))
+    w = float(bbox.get("width", 0))
+    h = float(bbox.get("height", 0))
+
+    x2 = max(0.0, min(float(img_w), x + w))
+    y2 = max(0.0, min(float(img_h), y + h))
+    x1 = max(0.0, min(float(img_w), x))
+    y1 = max(0.0, min(float(img_h), y))
+
+    box_area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+    image_area = float(img_w) * float(img_h)
+    if image_area <= 0:
+        return True
+    return (box_area / image_area) >= 0.98
+
+
 def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     objects = sorted(objects, key=lambda o: o["score"], reverse=True)
     kept = []
@@ -61,6 +84,33 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
     return kept
 
 
+def _drop_redundant_objects(objects: List[Dict[str, Any]], img_w: int, img_h: int) -> List[Dict[str, Any]]:
+    """Remote-side equivalent of the local degenerate-box filter."""
+    if not objects:
+        return objects
+
+    filtered: List[Dict[str, Any]] = []
+    dropped_degenerate = 0
+    for obj in objects:
+        if _is_degenerate_box(obj.get("bbox"), img_w, img_h):
+            logger.warning(
+                f"[remote/detection] dropping degenerate detection '{obj.get('label')}' "
+                f"bbox={obj.get('bbox')} (covers >= 98% of image)"
+            )
+            dropped_degenerate += 1
+            continue
+        filtered.append(obj)
+
+    if dropped_degenerate:
+        logger.info(f"[remote/detection] dropped {dropped_degenerate} degenerate full-image detection(s)")
+
+    if not filtered:
+        logger.info("[remote/detection] all detections were degenerate — returning empty object list")
+        return []
+
+    return filtered
+
+
 def detect_objects_remote(
     image_path: str,
     prompt: Optional[str] = None,
@@ -75,12 +125,24 @@ def detect_objects_remote(
     provider = remote_cfg.DETECTION_PROVIDER
     logger.info(f"[remote/detection] provider={provider} prompt='{text[:60]}…'")
 
+    try:
+        image = Image.open(image_path).convert("RGB")
+        img_w, img_h = image.size
+    except Exception as e:
+        logger.warning(f"[remote/detection] cannot read image for degenerate check ({e})")
+        img_w = img_h = 0
+
     if provider == "replicate":
-        return _detect_replicate(image_path, text, box_threshold)
+        objects = _detect_replicate(image_path, text, box_threshold)
     elif provider == "fal":
-        return _detect_fal(image_path, text, box_threshold)
+        objects = _detect_fal(image_path, text, box_threshold)
     else:
         raise ValueError(f"Unknown detection provider: {provider!r}. Choose 'replicate' or 'fal'.")
+
+    if img_w and img_h:
+        objects = _drop_redundant_objects(objects, img_w, img_h)
+
+    return objects
 
 
 def _detect_replicate(image_path: str, text: str, threshold: float) -> List[Dict[str, Any]]:

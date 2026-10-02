@@ -193,6 +193,9 @@ def detect_objects(
 
     objects = _nms(objects, iou_threshold=0.5)
 
+    # Drop detections that are essentially full-image duplicates
+    objects = _drop_redundant_objects(objects, img_w, img_h)
+
     seen: Dict[str, int] = {}
     for obj in objects:
         lbl = obj["label"]
