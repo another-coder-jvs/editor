@@ -20,3 +20,5 @@ backend/.venv/
 
 # VS Code
 .vscode/
+
+*observations/
