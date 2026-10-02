@@ -72,6 +72,34 @@ if DEVICE == "cuda":
     logger.info(f"[model_manager] GPU: {torch.cuda.get_device_name(0)} | VRAM: {torch.cuda.get_device_properties(0).total_memory // 1024**2} MB")
 
 
+def _looks_like_grounding_dino_snapshot(path: Path) -> bool:
+    """
+    Best-effort check that a local snapshot looks like Grounding DINO.
+
+    We only use this to skip unrelated cache folders when scanning for fallbacks.
+    """
+    try:
+        config_file = path / "config.json"
+        if not config_file.exists():
+            return False
+
+        import json
+        config = json.loads(config_file.read_text())
+        model_type = config.get("model_type") or config.get("architectures", [None])[0]
+        if model_type:
+            model_type = str(model_type)
+            if "grounding" in model_type.lower():
+                return True
+
+        # Fallback signal: Grounding DINO snapshots usually include a processing config
+        if (path / "processor_config.json").exists():
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
 class ModelManager:
     """Singleton that lazily loads and caches every AI model.
     All models auto-unload after IDLE_SECONDS of inactivity.
@@ -225,12 +253,96 @@ class ModelManager:
             model_id = "IDEA-Research/grounding-dino-base"
             cache    = str(WEIGHTS_DIR / "grounding_dino")
             logger.info(f"[model_manager] cache dir: {cache}")
-            self._grounding_dino_processor = AutoProcessor.from_pretrained(model_id, cache_dir=cache)
-            logger.info("[model_manager] Grounding DINO processor loaded")
-            self._grounding_dino = AutoModelForZeroShotObjectDetection.from_pretrained(
-                model_id, cache_dir=cache
-            ).to(DEVICE)
-            logger.info(f"[model_manager] Grounding DINO model loaded → {DEVICE}")
+
+            load_kwargs = {"cache_dir": cache}
+
+            def _load_gdino_from_path(path: str):
+                logger.info(f"[model_manager] Loading Grounding DINO from local path: {path}")
+                processor = AutoProcessor.from_pretrained(path, local_files_only=True)
+                logger.info("[model_manager] Grounding DINO processor loaded")
+                model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                    path, local_files_only=True
+                ).to(DEVICE)
+                logger.info(f"[model_manager] Grounding DINO model loaded → {DEVICE}")
+                return model, processor
+
+            try:
+                logger.info(f"[model_manager] Attempting HF load for {model_id}…")
+                self._grounding_dino_processor = AutoProcessor.from_pretrained(model_id, **load_kwargs)
+                logger.info("[model_manager] Grounding DINO processor loaded")
+                self._grounding_dino = AutoModelForZeroShotObjectDetection.from_pretrained(
+                    model_id, **load_kwargs
+                ).to(DEVICE)
+                logger.info(f"[model_manager] Grounding DINO model loaded → {DEVICE}")
+            except Exception as hf_error:
+                logger.warning(
+                    f"[model_manager] HF load failed for {model_id} ({hf_error}). "
+                    "Attempting local fallback…"
+                )
+
+                # Primary fallback: load from a local HF cache snapshot if one exists
+                cache_path = Path(cache)
+                snapshot_candidates: list[Path] = []
+
+                # Try the standard HF cache layout under the requested cache_dir
+                if cache_path.exists():
+                    snapshot_candidates.extend(
+                        sorted(cache_path.glob("models--*/snapshots/*/"), reverse=True)
+                    )
+
+                # Also try the default HF home cache in case the runtime uses a different base
+                hf_home = Path(str(os.environ.get("HF_HOME", "~/.cache/huggingface"))).expanduser()
+                if hf_home != cache_path and hf_home.exists():
+                    snapshot_candidates.extend(
+                        sorted(hf_home.glob("**/models--IDEA-Research--grounding-dino-base/snapshots/*/"), reverse=True)
+                    )
+                    snapshot_candidates.extend(
+                        sorted(hf_home.glob("**/snapshots/*/config.json"), reverse=True)
+                    )
+
+                loaded = False
+                for candidate in snapshot_candidates:
+                    try:
+                        config_file = candidate / "config.json"
+                        if not config_file.exists():
+                            continue
+
+                        # Validate that this looks like a real GDINO snapshot
+                        if not _looks_like_grounding_dino_snapshot(candidate):
+                            logger.debug(f"[model_manager] Skipping non-GDINO snapshot: {candidate}")
+                            continue
+
+                        logger.info(f"[model_manager] Found local snapshot candidate: {candidate}")
+                        self._grounding_dino, self._grounding_dino_processor = _load_gdino_from_path(str(candidate))
+                        loaded = True
+                        break
+                    except Exception as snapshot_error:
+                        logger.warning(f"[model_manager] Failed to load snapshot {candidate} ({snapshot_error})")
+
+                if not loaded:
+                    # Last resort: ask transformers to load strictly from cache if it already exists
+                    logger.warning(
+                        "[model_manager] No usable local Grounding DINO snapshot found. "
+                        "Retrying with local_files_only=True as a final fallback…"
+                    )
+                    try:
+                        self._grounding_dino_processor, self._grounding_dino = _load_gdino_from_path(model_id)
+                        loaded = True
+                    except Exception as final_error:
+                        logger.error(
+                            f"[model_manager] Local Grounding DINO load failed: {final_error}\n"
+                            "Fix options:\n"
+                            "  1) Renew the HF token and reload the server, or\n"
+                            "  2) Pre-download the model locally with:\n"
+                            "     python -m transformers.utils.huggingface_hub HfApi.download_repo(\n"
+                            "         repo_id='IDEA-Research/grounding-dino-base',\n"
+                            "         repo_type='model',\n"
+                            "         local_dir='" + cache + "'\n"
+                            "     )\n"
+                            "  3) Or run with COMPUTE_MODE=remote if a remote detection provider is configured."
+                        )
+                        raise
+
         self.touch()
         return self._grounding_dino, self._grounding_dino_processor
 

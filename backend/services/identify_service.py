@@ -8,6 +8,7 @@ This saves VRAM and improves accuracy.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Optional
@@ -56,28 +57,110 @@ def check_ollama() -> bool:
     return _try_start_ollama()
 
 
-def check_model() -> bool:
-    """Check if the vision model is available."""
+def _ollama_api(method: str, payload: dict) -> dict:
+    """
+    Call the local Ollama HTTP API directly.
+
+    This is used when the `ollama` Python package is not installed in the
+    runtime, but the Ollama server is still available (for example when the
+    server was started with `ollama serve` from the shell).
+    """
     try:
-        import ollama
-        result = ollama.list()
-        models = result.get("models", [])
+        import requests
+    except Exception as e:
+        raise RuntimeError(f"Cannot reach Ollama API: requests unavailable ({e})") from e
+
+    url = f"{OLLAMA_URL}/api/{method}"
+    logger.debug(f"[identify] Ollama API {method}: {url}")
+    response = requests.post(url, json=payload, timeout=30)
+    try:
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"[identify] Ollama API {method} failed: {response.status_code} {response.text}")
+        raise RuntimeError(f"Ollama API {method} failed: {response.status_code}") from e
+    return response.json()
+
+
+def _ollama_has_model(model_name: str) -> bool:
+    """
+    Check whether a model is present using the Ollama API.
+
+    Works with or without the `ollama` Python package.
+    """
+    try:
+        # Prefer the Python package when it exists and is usable
+        try:
+            import ollama as ollama_pkg
+
+            result = ollama_pkg.list()
+            models = result.get("models", [])
+            for model in models:
+                if str(model.get("model", "")).startswith(model_name):
+                    return True
+            return False
+        except Exception as pkg_error:
+            logger.debug(f"[identify] ollama package check failed ({pkg_error}), using HTTP API")
+
+        # Fallback: use the Ollama HTTP API directly
+        data = _ollama_api("list", {})
+        models = data.get("models", [])
         for model in models:
-            name = model.get("model", "")
-            if name.startswith(VISION_MODEL):
+            if str(model.get("model", "")).startswith(model_name):
                 return True
+        return False
     except Exception as e:
         logger.warning(f"[identify] Could not check models: {e}")
-    return False
+        return False
+
+
+def check_model() -> bool:
+    """Check if the vision model is available."""
+    return _ollama_has_model(VISION_MODEL)
 
 
 def download_model() -> None:
     """Download the vision model if not present."""
     logger.info(f"[identify] Downloading {VISION_MODEL}...")
+
+    # Prefer the Python package when it exists
     try:
-        import ollama
-        ollama.pull(VISION_MODEL)
+        import ollama as ollama_pkg
+        ollama_pkg.pull(VISION_MODEL)
         logger.info(f"[identify] {VISION_MODEL} ready")
+        return
+    except Exception as pkg_error:
+        logger.debug(f"[identify] ollama package pull failed ({pkg_error}), using HTTP API")
+
+    # Fallback: stream the pull via the Ollama HTTP API
+    try:
+        import requests
+
+        url = f"{OLLAMA_URL}/api/pull"
+        logger.debug(f"[identify] Ollama pull API: {url}")
+        with requests.post(url, json={"name": VISION_MODEL}, stream=True, timeout=300) as response:
+            response.raise_for_status()
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except Exception:
+                    # Some lines may not be valid JSON; ignore them
+                    continue
+                status = chunk.get("status")
+                digest = chunk.get("digest")
+                progress = chunk.get("progress") or ""
+                total = chunk.get("total")
+                if status == "success":
+                    logger.info(f"[identify] {VISION_MODEL} ready")
+                    return
+                if status and status not in {"downloading", "extracting"}:
+                    logger.info(f"[identify] Ollama pull status: {status} {digest} {progress}/{total}")
+                    continue
+                if digest and progress is not None and total:
+                    logger.info(f"[identify] Ollama pull: {digest} {progress}/{total}")
+
+        logger.warning(f"[identify] Ollama pull completed without explicit success for {VISION_MODEL}")
     except Exception as e:
         logger.error(f"[identify] Model download failed: {e}")
         raise
@@ -86,37 +169,36 @@ def download_model() -> None:
 def identify_objects(image_path: str) -> str:
     """
     Use Ollama vision model to identify objects in an image.
-    
-    Returns a dot-separated string like: "person. shoe. pillow. flower."
-    This is used as the prompt for Grounding DINO.
+
+    Returns a text response from the vision model.
+    This is parsed by `_clean_ollama_prompt()` in detection_service.py into a
+    dot-separated Grounding DINO prompt.
     """
     if not check_ollama():
         raise RuntimeError(
             "Ollama is not running. Start it with: ollama serve"
         )
-    
+
     if not check_model():
         download_model()
-    
+
     logger.info(f"[identify] Analyzing image: {image_path}")
-    
-    import ollama
-    import base64
+
     from pathlib import Path
-    
-    # Read image as base64 (more reliable than file path across systems)
+    import base64
+
     img_path = Path(image_path)
     if not img_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
-    
+
     with open(img_path, "rb") as f:
         img_b64 = base64.b64encode(f.read()).decode("utf-8")
-    
+
     logger.info(f"[identify] Image loaded ({img_path.stat().st_size // 1024}KB), sending to {VISION_MODEL}...")
-    
-    response = ollama.chat(
-        model=VISION_MODEL,
-        messages=[
+
+    payload = {
+        "model": VISION_MODEL,
+        "messages": [
             {
                 "role": "user",
                 "content": (
@@ -135,15 +217,17 @@ def identify_objects(image_path: str) -> str:
                 "images": [img_b64],
             }
         ],
-        options={
+        "options": {
             "temperature": 0,
             "num_ctx": 4096,
             "num_predict": 100,
             "repeat_penalty": 1.5,
             "repeat_last_n": 64,
         },
-        keep_alive="30m",
-    )
+        "keep_alive": "30m",
+    }
+
+    response = _ollama_api("chat", payload)
     
     logger.info(f"[identify] Full Ollama response: {response}")
     
