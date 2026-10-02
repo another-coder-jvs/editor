@@ -158,8 +158,8 @@ def detect_objects(
 
     # ── Local mode (unchanged below) ─────────────────────────────────────────
     image = Image.open(image_path).convert("RGB")
-    w, h = image.size
-    logger.info(f"[detection] image size: {w}x{h}")
+    img_w, img_h = image.size
+    logger.info(f"[detection] image size: {img_w}x{img_h}")
 
     # --- Step 1: Determine the prompt for Grounding DINO ---
     if prompt:
@@ -208,13 +208,13 @@ def detect_objects(
             inputs.input_ids,
             box_threshold=box_threshold,
             text_threshold=text_threshold,
-            target_sizes=[(h, w)],
+            target_sizes=[(img_h, img_w)],
         )[0]
     except TypeError:
         results = processor.post_process_grounded_object_detection(
             outputs=outputs,
             input_ids=inputs.input_ids,
-            target_sizes=[(h, w)],
+            target_sizes=[(img_h, img_w)],
         )[0]
         keep = results["scores"] > box_threshold
         results = {
