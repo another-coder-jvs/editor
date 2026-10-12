@@ -218,6 +218,15 @@ def _segment_objects_remote(
         Image.fromarray(owned_mask).save(str(mask_file))
         mask_to_fullcanvas_png(image_np, owned_mask, png_file)
 
+        # Decontaminate foreground edges (colour bleed removal)
+        try:
+            from services.restoration_service import decontaminate_foreground_edges
+            rgba_arr   = np.array(Image.open(png_file).convert("RGBA"))
+            rgba_clean = decontaminate_foreground_edges(rgba_arr, band_px=3)
+            Image.fromarray(rgba_clean).save(str(png_file), optimize=False)
+        except Exception as _de:
+            logger.debug(f"[segmentation/remote] foreground decontamination skipped: {_de}")
+
         layers.append(LayerData(
             id=layer_id,
             name=label,
@@ -278,15 +287,20 @@ def _build_background_layer(
     # Build the union mask of all object-owned pixels
     union_mask = (ownership_map >= 0).astype(np.uint8) * 255
 
+    # Protection mask: pixels owned by other objects that we must not erase.
+    # Set to None here because union_mask already IS the full object union —
+    # there are no "other" objects to protect from the combined removal.
+    # If individual-object restoration is ever added, pass a per-object
+    # complement mask here.
+    protection_mask = None
+
     object_pixel_count = int(np.sum(union_mask > 0))
     logger.info(f"[segmentation] object pixels to restore: {object_pixel_count}")
 
     if object_pixel_count == 0:
-        # No objects detected — use original image as fully-opaque background
         logger.info("[segmentation] no objects — using original image as background")
         restored_np = image_np.copy()
     else:
-        # Run the restoration pipeline
         _labels = object_labels or []
         try:
             logger.info(
@@ -296,9 +310,11 @@ def _build_background_layer(
                 image_np=image_np,
                 union_mask=union_mask,
                 object_labels=_labels,
+                refined_masks=refined_masks,
                 force_generative=False,
                 steps=20,
                 dilation_px=12,
+                protection_mask=protection_mask,
             )
             logger.info("[segmentation] background restoration complete")
         except Exception as e:
@@ -470,6 +486,15 @@ def segment_objects(
 
         Image.fromarray(owned_mask).save(str(mask_file))
         mask_to_fullcanvas_png(image_np, owned_mask, png_file)
+
+        # Decontaminate foreground edges (colour bleed removal)
+        try:
+            from services.restoration_service import decontaminate_foreground_edges
+            rgba_arr   = np.array(Image.open(png_file).convert("RGBA"))
+            rgba_clean = decontaminate_foreground_edges(rgba_arr, band_px=3)
+            Image.fromarray(rgba_clean).save(str(png_file), optimize=False)
+        except Exception as _de:
+            logger.debug(f"[segmentation] foreground decontamination skipped: {_de}")
 
         # Determine a sensible layer_type from the label
         lbl_lower = label.lower()
