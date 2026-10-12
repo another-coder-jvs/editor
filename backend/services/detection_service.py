@@ -31,7 +31,7 @@ FALLBACK_PROMPT = (
     "door . window . stairs . "
     "fire hydrant . traffic light . bench . trash can . "
     "clock . mirror . painting . vase . "
-    "ball . helmet . food . mobile phone . stone . logo . text . graphic"
+    "ball . helmet . food . mobile phone . stone . logo . graphic"
 )
 
 

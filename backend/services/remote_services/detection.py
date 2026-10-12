@@ -34,7 +34,7 @@ FALLBACK_PROMPT = (
     "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
     "door . window . stairs . "
     "fire hydrant . traffic light . bench . trash can . "
-    "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . logo . text . graphic"
+    "clock . mirror . painting . vase . ball . helmet . food . mobile phone . stone . logo . graphic"
 )
 
 
