@@ -15,7 +15,10 @@ from services.identify_service import identify_objects, check_ollama
 
 logger = logging.getLogger(__name__)
 
-# Fallback when Ollama is unavailable — comprehensive object list for Grounding DINO
+# Fallback when Ollama is unavailable — comprehensive object list for Grounding DINO.
+# NOTE: "sign" and "poster" are intentionally EXCLUDED.  Those labels cause DINO to
+# detect the entire uploaded advertisement/poster as a single foreground object, which
+# then appears as a duplicate full-image layer in the output.
 FALLBACK_PROMPT = (
     "person . car . truck . bus . motorcycle . bicycle . boat . airplane . train . "
     "dog . cat . bird . horse . cow . sheep . elephant . bear . "
@@ -26,10 +29,9 @@ FALLBACK_PROMPT = (
     "book . laptop . phone . keyboard . monitor . television . camera . "
     "bag . backpack . suitcase . umbrella . hat . shoe . glasses . "
     "door . window . stairs . "
-    "sign . poster . "
     "fire hydrant . traffic light . bench . trash can . "
     "clock . mirror . painting . vase . "
-    "ball . helmet . food . mobile phone . stone"
+    "ball . helmet . food . mobile phone . stone . logo . text . graphic"
 )
 
 
@@ -63,50 +65,124 @@ def _nms(objects: List[Dict], iou_threshold: float = 0.5) -> List[Dict]:
 
 
 
+def _box_area(bbox: Dict[str, Any], img_w: int, img_h: int) -> float:
+    """Clipped area of bbox in pixels (never exceeds image area)."""
+    x1 = max(0.0, min(float(img_w), float(bbox.get("x", 0))))
+    y1 = max(0.0, min(float(img_h), float(bbox.get("y", 0))))
+    x2 = max(0.0, min(float(img_w), float(bbox.get("x", 0)) + float(bbox.get("width", 0))))
+    y2 = max(0.0, min(float(img_h), float(bbox.get("y", 0)) + float(bbox.get("height", 0))))
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
 def _is_degenerate_box(bbox: Dict[str, Any], img_w: int, img_h: int) -> bool:
+    """True if the box covers >= 85% of the full image canvas.
+
+    Lowered from 0.98 → 0.85 because typical poster/full-advertisement detections
+    from Grounding DINO land in the 86-97% range and the old threshold missed them.
+    """
     if not bbox:
         return True
-    x = float(bbox.get("x", 0))
-    y = float(bbox.get("y", 0))
-    w = float(bbox.get("width", 0))
-    h = float(bbox.get("height", 0))
-
-    x2 = max(0.0, min(float(img_w), x + w))
-    y2 = max(0.0, min(float(img_h), y + h))
-    x1 = max(0.0, min(float(img_w), x))
-    y1 = max(0.0, min(float(img_h), y))
-
-    box_area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+    area = _box_area(bbox, img_w, img_h)
     image_area = float(img_w) * float(img_h)
     if image_area <= 0:
         return True
-    return (box_area / image_area) >= 0.98
+    return (area / image_area) >= 0.85
+
+
+def _containment_ratio(inner: Dict[str, Any], outer: Dict[str, Any], img_w: int, img_h: int) -> float:
+    """Return the fraction of *inner*'s area that lies inside *outer*.
+
+    A value >= 0.85 means inner is almost entirely contained by outer.
+    """
+    ix1 = max(0.0, float(inner.get("x", 0)))
+    iy1 = max(0.0, float(inner.get("y", 0)))
+    ix2 = min(float(img_w), ix1 + float(inner.get("width", 0)))
+    iy2 = min(float(img_h), iy1 + float(inner.get("height", 0)))
+
+    ox1 = max(0.0, float(outer.get("x", 0)))
+    oy1 = max(0.0, float(outer.get("y", 0)))
+    ox2 = min(float(img_w), ox1 + float(outer.get("width", 0)))
+    oy2 = min(float(img_h), oy1 + float(outer.get("height", 0)))
+
+    inter_x1, inter_y1 = max(ix1, ox1), max(iy1, oy1)
+    inter_x2, inter_y2 = min(ix2, ox2), min(iy2, oy2)
+    inter_area = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+
+    inner_area = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inner_area <= 0:
+        return 0.0
+    return inter_area / inner_area
 
 
 def _drop_redundant_objects(objects: List[Dict[str, Any]], img_w: int, img_h: int) -> List[Dict[str, Any]]:
+    """Remove:
+    1. Boxes covering >= 85% of the image canvas (full-image / poster duplicates).
+    2. Boxes that are a superset of smaller boxes: if box A contains >= 85% of box B,
+       AND box A is also larger than box B by >= 20%, then A is a duplicate container
+       and should be dropped (B is the real distinct object).
+    """
     if not objects:
         return objects
 
+    # --- Pass 1: drop near-full-canvas boxes ---
     filtered: List[Dict[str, Any]] = []
     dropped_degenerate = 0
     for obj in objects:
         if _is_degenerate_box(obj.get("bbox"), img_w, img_h):
             logger.warning(
-                f"[detection] dropping degenerate detection '{obj.get('label')}' "
-                f"bbox={obj.get('bbox')} (covers >= 98% of image)"
+                f"[detection] dropping near-full-canvas detection '{obj.get('label')}' "
+                f"bbox={obj.get('bbox')} (covers >= 85% of image)"
             )
             dropped_degenerate += 1
             continue
         filtered.append(obj)
 
     if dropped_degenerate:
-        logger.info(f"[detection] dropped {dropped_degenerate} degenerate full-image detection(s)")
+        logger.info(f"[detection] dropped {dropped_degenerate} near-full-canvas detection(s)")
 
     if not filtered:
         logger.info("[detection] all detections were degenerate — returning empty object list")
         return []
 
-    return filtered
+    # --- Pass 2: drop superset-container boxes ---
+    # Sort largest → smallest so we can check whether a big box contains smaller ones.
+    by_area = sorted(filtered, key=lambda o: _box_area(o.get("bbox", {}), img_w, img_h), reverse=True)
+    image_area = float(img_w) * float(img_h)
+    to_drop: set = set()
+
+    for i, big in enumerate(by_area):
+        if i in to_drop:
+            continue
+        big_area = _box_area(big.get("bbox", {}), img_w, img_h)
+        for j, small in enumerate(by_area):
+            if j <= i or j in to_drop:
+                continue
+            small_area = _box_area(small.get("bbox", {}), img_w, img_h)
+            if small_area <= 0:
+                continue
+            # big contains >= 85% of small, AND big is at least 20% larger
+            if (
+                _containment_ratio(small.get("bbox", {}), big.get("bbox", {}), img_w, img_h) >= 0.85
+                and big_area >= small_area * 1.20
+            ):
+                # Additionally: only suppress the large container if it covers a
+                # significant fraction of the canvas (>= 40%) to avoid dropping
+                # genuinely separate large objects that just happen to share area.
+                if big_area / image_area >= 0.40:
+                    logger.warning(
+                        f"[detection] dropping container detection '{big.get('label')}' "
+                        f"(contains {_containment_ratio(small.get('bbox',{}), big.get('bbox',{}), img_w, img_h):.0%} "
+                        f"of '{small.get('label')}' and covers "
+                        f"{big_area/image_area:.0%} of canvas)"
+                    )
+                    to_drop.add(i)
+                    break  # no need to check further small boxes for this big
+
+    result = [obj for idx, obj in enumerate(by_area) if idx not in to_drop]
+    if to_drop:
+        logger.info(f"[detection] dropped {len(to_drop)} superset-container detection(s)")
+
+    return result
 
 
 def _clean_ollama_prompt(raw: str) -> str:

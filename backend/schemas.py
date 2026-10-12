@@ -28,6 +28,12 @@ class LayerData(BaseModel):
     rotation: float = 0.0
     history: List[str] = Field(default_factory=list)
     locked: bool = False
+    # Layer classification — used by the frontend to distinguish background from
+    # foreground objects.  Valid values: "object", "text", "logo", "background",
+    # "unrecognized".  Defaults to "object" for backwards-compatibility with
+    # sessions created before this field was added.
+    layer_type: str = Field(default="object")
+    is_background: bool = Field(default=False)
 
 
 class DetectRequest(BaseModel):

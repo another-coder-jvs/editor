@@ -39,6 +39,10 @@ export interface LayerData {
   blend_mode: BlendMode
   adjustments: LayerAdjustments
   group_id?: string
+  /** Classification of this layer: 'object' | 'text' | 'logo' | 'background' | 'unrecognized' */
+  layer_type?: 'object' | 'text' | 'logo' | 'background' | 'unrecognized'
+  /** True for the single background layer generated during segmentation */
+  is_background?: boolean
 }
 
 export type BlendMode =

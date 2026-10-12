@@ -47,7 +47,14 @@ def get_latest_session():
 
     # Validate all layer PNGs still exist
     for layer in meta.get("layers", []):
-        png_rel = layer.get("png_path", "").lstrip("/temp")
+        png_path = layer.get("png_path", "")
+        # Strip leading "/temp/" prefix to get a path relative to TEMP_DIR
+        if png_path.startswith("/temp/"):
+            png_rel = png_path[len("/temp/"):]
+        elif png_path.startswith("temp/"):
+            png_rel = png_path[len("temp/"):]
+        else:
+            png_rel = png_path.lstrip("/")
         logger.info(f"Checking : {config.TEMP_DIR}/{png_rel}")
         if not (config.TEMP_DIR / png_rel).exists():
             logger.warning(f"[session/latest] missing layer file {png_rel}, skipping session")
