@@ -233,7 +233,11 @@ def _segment_objects_remote(
         logger.info(f"[segmentation/remote] layer '{label}' created: id={layer_id}")
 
     # --- Background layer ---
-    bg_layer = _build_background_layer(image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects))
+    bg_layer = _build_background_layer(
+        image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects),
+        refined_masks=list(refined_masks.values()),
+        object_labels=[obj["label"] for _, obj in sorted_objects if obj["label"]],
+    )
     if bg_layer:
         layers.append(bg_layer)
 
@@ -252,29 +256,57 @@ def _build_background_layer(
     img_w: int,
     img_h: int,
     num_objects: int,
+    refined_masks: Optional[List[np.ndarray]] = None,
+    object_labels: Optional[List[str]] = None,
 ) -> Optional[LayerData]:
     """
-    Build a background layer from original pixels.
+    Build a fully-opaque background layer with intelligent restoration.
 
-    The background layer shows every pixel NOT owned by any detected object.
-    It uses the original image pixels directly — no inpainting, no FLUX.
-    This preserves decorative elements, text, and color fields that are part
-    of the original graphic design.
+    Process:
+    1. Build a union removal mask from all object-owned pixels.
+    2. Call restoration_service.restore_background() to reconstruct the
+       background pixels behind every removed object (Stage A → cv2,
+       Stage B → SDXL/FLUX generative, Stage C → seam blend).
+    3. Save the result as a full-canvas opaque RGBA PNG (alpha = 255 everywhere).
+
+    The background layer is FULLY OPAQUE (alpha=255) because it sits at
+    z_index=0 and object layers composite on top of it.  There are no
+    transparent holes — the restoration fills every object-shaped gap.
     """
-    background_binary = (ownership_map < 0).astype(np.uint8)  # 1 = not claimed
-    background_pixel_count = int(np.sum(background_binary))
-    logger.info(f"[segmentation] background unclaimed pixels: {background_pixel_count}")
+    from services.restoration_service import restore_background, build_removal_mask
 
-    if background_pixel_count == 0:
-        logger.info("[segmentation] no background pixels — skipping background layer")
-        return None
+    # Build the union mask of all object-owned pixels
+    union_mask = (ownership_map >= 0).astype(np.uint8) * 255
 
-    # Simple alpha: hard binary for clean separation
-    bg_mask = (background_binary * 255).astype(np.uint8)
+    object_pixel_count = int(np.sum(union_mask > 0))
+    logger.info(f"[segmentation] object pixels to restore: {object_pixel_count}")
 
-    # Optional: small morphological clean-up to remove stray 1-pixel slivers
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    bg_mask = cv2.morphologyEx(bg_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    if object_pixel_count == 0:
+        # No objects detected — use original image as fully-opaque background
+        logger.info("[segmentation] no objects — using original image as background")
+        restored_np = image_np.copy()
+    else:
+        # Run the restoration pipeline
+        _labels = object_labels or []
+        try:
+            logger.info(
+                f"[segmentation] running background restoration for {len(_labels)} object(s): {_labels}"
+            )
+            restored_np = restore_background(
+                image_np=image_np,
+                union_mask=union_mask,
+                object_labels=_labels,
+                force_generative=False,
+                steps=20,
+                dilation_px=12,
+            )
+            logger.info("[segmentation] background restoration complete")
+        except Exception as e:
+            logger.warning(
+                f"[segmentation] background restoration failed ({e}) "
+                f"— falling back to original image for background layer"
+            )
+            restored_np = image_np.copy()
 
     layer_id  = f"{session_id}_bg_{uuid.uuid4().hex[:6]}"
     mask_name = f"{layer_id}_background_mask.png"
@@ -282,11 +314,13 @@ def _build_background_layer(
     mask_file = session_dir / mask_name
     png_file  = session_dir / png_name
 
-    Image.fromarray(bg_mask).save(str(mask_file))
+    # Mask PNG: white everywhere (for reference / editing purposes)
+    full_mask = np.full((img_h, img_w), 255, dtype=np.uint8)
+    Image.fromarray(full_mask).save(str(mask_file))
 
-    # Background pixels come directly from the original image
-    rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
-    rgba[:, :, 3] = bg_mask
+    # Layer PNG: fully opaque RGBA using the RESTORED image
+    rgba = cv2.cvtColor(restored_np, cv2.COLOR_RGB2RGBA)
+    rgba[:, :, 3] = 255  # fully opaque — objects composite on top
     Image.fromarray(rgba).save(str(png_file), optimize=False)
 
     full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
@@ -461,8 +495,14 @@ def segment_objects(
         logger.info(f"[segmentation] layer '{label}' (type={ltype}) created: id={layer_id}")
 
     # ── Background layer ───────────────────────────────────────────────────
+    # Collect per-object masks and labels for the restoration service
+    _refined_mask_list = [refined_masks[orig_idx] for orig_idx, _ in sorted_objects if orig_idx in refined_masks]
+    _object_label_list = [obj["label"] for _, obj in sorted_objects]
+
     bg_layer = _build_background_layer(
-        image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects)
+        image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects),
+        refined_masks=_refined_mask_list,
+        object_labels=_object_label_list,
     )
     if bg_layer:
         layers.append(bg_layer)

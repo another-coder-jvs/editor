@@ -199,3 +199,15 @@ export async function reconstructBackground(payload: {
   const { data } = await api.post('/inpaint-bg', payload)
   return data
 }
+
+export async function restoreBackground(payload: {
+  session_id: string
+  image_path: string
+  mask_paths: string[]
+  object_labels?: string[]
+  force_generative?: boolean
+  steps?: number
+}): Promise<{ status: string; png_path: string; session_id: string }> {
+  const { data } = await api.post('/restore-background', payload)
+  return data
+}
