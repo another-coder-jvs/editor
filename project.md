@@ -567,14 +567,6 @@ ollama pull llava:7b
 # The backend auto-starts Ollama if installed but not running
 ```
 
----
-
-## Running on Google Colab / Remote
-
-1. Set `ENV=server` (default) so paths point to Google Drive.
-2. Run `start_ngrok.py` or `start_colab.py` to get a public ngrok URL.
-3. Update `frontend/src/config.ts` → `baseUrl` with the ngrok URL.
-4. Rebuild frontend or use the pre-built version.
 
 ---
 
