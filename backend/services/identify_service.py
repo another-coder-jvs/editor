@@ -61,9 +61,15 @@ def _ollama_api(method: str, payload: dict) -> dict:
     """
     Call the local Ollama HTTP API directly.
 
+    Handles two Ollama response styles:
+    - Single-JSON endpoints (/api/version, /api/pull with stream=false):
+        response body is one JSON object → parse with response.json().
+    - NDJSON-streaming endpoints (/api/chat, /api/generate with stream=true):
+        response body is multiple JSON lines → read all lines and return the
+        last non-empty one, which is the final message object.
+
     This is used when the `ollama` Python package is not installed in the
-    runtime, but the Ollama server is still available (for example when the
-    server was started with `ollama serve` from the shell).
+    runtime, but the Ollama server is still available.
     """
     try:
         import requests
@@ -72,13 +78,52 @@ def _ollama_api(method: str, payload: dict) -> dict:
 
     url = f"{OLLAMA_URL}/api/{method}"
     logger.debug(f"[identify] Ollama API {method}: {url}")
-    response = requests.post(url, json=payload, timeout=30)
+
+    # /api/list is a GET endpoint — no body
+    if method == "list":
+        response = requests.get(url, timeout=10)
+    else:
+        # For chat/generate add stream:false so Ollama returns one JSON object
+        # instead of an NDJSON stream.  This is the simplest fix and avoids
+        # the "Extra data" json.JSONDecodeError on multi-line responses.
+        if method in ("chat", "generate"):
+            payload = {**payload, "stream": False}
+        response = requests.post(url, json=payload, timeout=120)
+
     try:
         response.raise_for_status()
     except Exception as e:
-        logger.error(f"[identify] Ollama API {method} failed: {response.status_code} {response.text}")
+        logger.error(
+            f"[identify] Ollama API {method} failed: "
+            f"{response.status_code} {response.text[:200]}"
+        )
         raise RuntimeError(f"Ollama API {method} failed: {response.status_code}") from e
-    return response.json()
+
+    # Even with stream:false some Ollama versions still send NDJSON.
+    # Safely handle both: try standard json() first, fall back to last NDJSON line.
+    text = response.text.strip()
+    try:
+        return response.json()
+    except Exception:
+        pass
+
+    # NDJSON fallback: find the last non-empty valid JSON line
+    last_obj: dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            last_obj = obj
+        except Exception:
+            continue
+
+    if not last_obj:
+        raise RuntimeError(
+            f"Ollama API {method}: could not parse response body: {text[:200]}"
+        )
+    return last_obj
 
 
 def _ollama_has_model(model_name: str) -> bool:
@@ -93,15 +138,19 @@ def _ollama_has_model(model_name: str) -> bool:
             import ollama as ollama_pkg
 
             result = ollama_pkg.list()
-            models = result.get("models", [])
-            for model in models:
-                if str(model.get("model", "")).startswith(model_name):
+            # Newer ollama package versions return a ListResponse object with a
+            # .models attribute (list of Model objects), not a plain dict.
+            models_raw = getattr(result, "models", None) or result.get("models", [])
+            for model in models_raw:
+                # Model objects expose .model attribute; dicts use "model" key
+                name = getattr(model, "model", None) or model.get("model", "")
+                if str(name).startswith(model_name):
                     return True
             return False
         except Exception as pkg_error:
             logger.debug(f"[identify] ollama package check failed ({pkg_error}), using HTTP API")
 
-        # Fallback: use the Ollama HTTP API directly
+        # Fallback: GET /api/list directly (no body needed)
         data = _ollama_api("list", {})
         models = data.get("models", [])
         for model in models:
