@@ -10,7 +10,7 @@ logger.info("Project started.. ! importing files !")
 
 
 import os 
-os.environ['HF_TOKEN'] = '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'
+os.environ['HF_TOKEN'] = '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'
 
 # Verify
 print(os.environ.get('HF_TOKEN'))   
