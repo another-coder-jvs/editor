@@ -1,55 +1,56 @@
 """
-Intelligent background restoration after object cutout.
+Background restoration service — rewrote per spec (2026-10-13).
 
-Fixed bugs vs. previous version
-────────────────────────────────
-C1  _build_feather_weight produced near-zero weights for large objects because
-    it multiplied by (feather_px / max_dist_inside), collapsing everything to ~0.
-    Fixed: compute weight purely from distance transform, no normalisation by
-    max_dist_inside. Hard overrides removed; smooth ramps used instead.
+Pipeline per object
+───────────────────
+1.  Per-object adaptive mask
+    • Dilate by max(25 px, 3% of bbox diagonal) to cover cast shadows
+    • Add contact-shadow band (dark pixels adjacent to mask bottom edge)
+    • 6-px feather for compositing only (not for inpaint model)
 
-C2  Stage C blended original object-edge pixels back in (ghost halo) because
-    the weight was near-zero in the transition zone.  Fixed by C1.
+2.  Stage A — LaMa (big-lama / simple_lama_inpainting)
+    • Full-res image + dilated binary mask, no prompt
+    • Runs on the FULL canvas (not a crop) so LaMa sees global context
+    • cv2 TELEA+NS fallback if LaMa is unavailable
 
-C3  cv2.inpaint ran on the full canvas with inpaintRadius=12, causing colour
-    drift for large holes.  Fixed: crop a padded bounding-box context window,
-    run inpaint on that crop (so the radius reaches real background faster),
-    paste the result back.
+3.  Stage B — SDXL texture refinement (optional, run on LaMa output)
+    • strength 0.35, guidance 5
+    • Crop = per-object bbox + 25% padding; never merge objects
+    • Positive prompt: background-stat colour name + "seamless texture"
+      (NEVER the object label, NEVER "no X")
+    • Negative prompt: "{label}, shoe, sneaker, …"
+    • Shape-cue suppression: SDXL runs on a blurred/rectangular proxy mask,
+      result is composited back inside the real feathered mask only
+    • Skipped when hole < 5% of canvas OR time budget already tight
 
-C4  Fixed-radius dilation missed colour-contaminated boundary pixels.
-    Fixed: adaptive_removal_mask() adds a colour-contamination ring on top of
-    the flat dilation: pixels just outside the mask that contain significant
-    object-colour bleed are included in the removal region.
+4.  Validation
+    • Run Grounding DINO on the restored hole with "{label} . text . logo"
+    • If top score > 0.3: retry once with larger mask (+15 px) and seed+1
+    • After retry: fall back to pure LaMa if still failing
 
-C5  SDXL received a hard binary mask with no softening.  Fixed: the mask
-    passed to the generative model is Gaussian-blurred so the model sees a
-    soft gradient and generates natural boundary transitions.
+5.  Blend
+    • Feathered alpha composite (distance-transform ramp, 6 px) always
+    • Poisson only when hole < 8% of canvas (avoids artefacts on large holes)
+    • Hard-lock: unmasked pixels identical to original
 
-C6  SDXL received the full downscaled image.  Fixed: crop a padded bounding
-    box around the object, run inpaint at high resolution on the crop, paste
-    back.  The model now sees the object at much higher effective resolution.
+6.  Logging (all calls)
+    • Positive + negative prompts, guidance, strength, crop box, seed
+    • Saves crop PNG + mask PNG to debug dir when DEBUG_RESTORATION=1
 
-C7  Hard weight overrides at dist==0 and dist>feather_px created two
-    additional ring artefacts.  Fixed: smooth sigmoid/linear ramps replace
-    hard steps.
-
-C8  Pure alpha blending for large regions left visible colour patches when
-    SDXL generated slightly different illumination.  Fixed: Poisson seamless
-    clone is applied for large holes; colour matching is applied before blend.
-
-Pipeline overview
-─────────────────
-  adaptive_removal_mask()   build scale-aware, colour-contamination-aware mask
-  _stage_a()                cv2 TELEA+NS on a padded crop (better context)
-  _stage_b()                SDXL/FLUX on a padded crop with soft mask blur
-  _color_decontaminate()    replace boundary-band residual object pixels
-  _stage_c()                correct feathered blend + Poisson for large holes
-  restore_background()      orchestrator
+Public API
+──────────
+    restore_background(image_np, per_object_data, ...)
+        per_object_data: list of {"mask": np.ndarray, "label": str, "bbox": dict}
+        Returns (H, W, 3) uint8 RGB.
 """
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Tuple
+import math
+import os
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -57,148 +58,224 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Tuning constants
-# ---------------------------------------------------------------------------
+# ── Constants ─────────────────────────────────────────────────────────────
+MIN_DILATION_PX: int = 25            # minimum per-object dilation
+DILATION_BBOX_DIAG_FRAC: float = 0.03   # 3% of bbox diagonal
+SHADOW_BAND_PX: int = 12             # how far below mask to look for shadow
+SHADOW_DARK_THRESHOLD: int = 60      # pixels darker than this are "shadow"
+FEATHER_PX: int = 6                  # compositing feather width
 
-GENERATIVE_THRESHOLD: float = 0.05    # hole fraction that triggers Stage B
-COMPLEX_SCENE_EDGE_THRESHOLD: float = 0.08  # bg edge density → Stage B
+SDXL_PAD_FACTOR: float = 0.25       # crop padding around object
+SDXL_STRENGTH: float = 0.35         # texture-only refinement
+SDXL_GUIDANCE: float = 5.0
+SDXL_STEPS: int = 20
+SDXL_MIN_HOLE_FRAC: float = 0.05    # skip SDXL if hole < 5% of canvas
+MAX_INPAINT_DIM: int = 1024
 
-DEFAULT_DILATION_PX: int = 12         # base mask dilation radius
-SEAM_FEATHER_PX: int = 24             # feather width in Stage C (was 16)
-MAX_INPAINT_DIM: int = 1024           # max dim for generative model
-CONTEXT_PAD_FACTOR: float = 0.35      # bounding-box padding factor for crop
-MIN_CONTEXT_PAD_PX: int = 80          # minimum crop padding in pixels
-MASK_BLUR_SIGMA: float = 8.0          # Gaussian blur sigma for model mask
-POISSON_THRESHOLD: float = 0.12       # hole fraction above which Poisson is used
+FEATHERED_ALPHA_ALWAYS: bool = True  # always feathered alpha composite
+POISSON_MAX_HOLE_FRAC: float = 0.08  # Poisson only when hole < 8%
 
-SAME_PIXEL_DIST: float = 10.0    # L2 threshold to call a pixel "same as original"
-SAME_PIXEL_FRAC: float = 0.80    # fraction of mask pixels that must differ for result to be accepted
-                                  # raised from 0.60 — false rejections occurred when background
-                                  # colour happened to match the original's surrounding area
+DINO_DETECT_THRESHOLD: float = 0.3   # re-try if detection score > this
+RETRY_EXTRA_DILATION: int = 15       # extra dilation on retry
 
-# Color-contamination detection thresholds
-COLOR_CONTAM_BAND_PX: int = 6         # pixels outside mask to inspect for bleed
-COLOR_CONTAM_MAX_DIST: float = 40.0   # max L2 dist-to-object-mean to flag pixel
+DEBUG_DIR: Optional[Path] = (
+    Path(os.environ.get("DEBUG_RESTORATION_DIR", "/tmp/restoration_debug"))
+    if os.environ.get("DEBUG_RESTORATION") == "1"
+    else None
+)
+
+# ── Colour name lookup (for SDXL texture prompt) ───────────────────────────
+_COLOUR_NAMES = [
+    ((200, 200, 200), "light grey"),  ((128, 128, 128), "grey"),
+    ((40,  40,  40),  "dark grey"),   ((10,  10,  10),  "black"),
+    ((255, 255, 255), "white"),
+    ((180, 30,  30),  "dark red"),    ((220, 60,  60),  "red"),
+    ((200, 100, 50),  "orange"),      ((200, 180, 50),  "yellow"),
+    ((40,  100, 40),  "dark green"),  ((60,  160, 60),  "green"),
+    ((30,  60,  160), "dark blue"),   ((60,  100, 200), "blue"),
+    ((100, 50,  150), "purple"),      ((160, 50,  100), "maroon"),
+    ((50,  140, 160), "teal"),        ((180, 140, 100), "tan"),
+    ((100, 70,  40),  "brown"),
+]
+
+def _colour_name(rgb: np.ndarray) -> str:
+    r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+    best, best_d = "neutral", 1e9
+    for (cr, cg, cb), name in _COLOUR_NAMES:
+        d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        if d < best_d:
+            best_d, best = d, name
+    return best
 
 
-# ---------------------------------------------------------------------------
-# Adaptive removal mask (fixes BUG C4)
-# ---------------------------------------------------------------------------
+# ── Debug helpers ──────────────────────────────────────────────────────────
 
-def adaptive_removal_mask(
+def _debug_save(tag: str, img: np.ndarray, mask: Optional[np.ndarray] = None) -> None:
+    """Save image and optional mask to DEBUG_DIR when debugging is enabled."""
+    if DEBUG_DIR is None:
+        return
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        uid = uuid.uuid4().hex[:6]
+        Image.fromarray(img).save(str(DEBUG_DIR / f"{tag}_{uid}.png"))
+        if mask is not None:
+            Image.fromarray(mask).save(str(DEBUG_DIR / f"{tag}_{uid}_mask.png"))
+    except Exception as e:
+        logger.debug(f"[restoration/debug] save failed: {e}")
+
+
+# ── Per-object mask construction ───────────────────────────────────────────
+
+def _per_object_dilation(raw_mask: np.ndarray) -> int:
+    """Return dilation radius for one object: max(25px, 3% of bbox diagonal)."""
+    rows = np.any(raw_mask > 0, axis=1)
+    cols = np.any(raw_mask > 0, axis=0)
+    if not np.any(rows) or not np.any(cols):
+        return MIN_DILATION_PX
+    y1, y2 = np.where(rows)[0][[0, -1]]
+    x1, x2 = np.where(cols)[0][[0, -1]]
+    diag = math.hypot(y2 - y1, x2 - x1)
+    return max(MIN_DILATION_PX, int(diag * DILATION_BBOX_DIAG_FRAC))
+
+
+def _add_contact_shadow(
     image_np: np.ndarray,
-    hard_mask: np.ndarray,
-    dilation_px: int = DEFAULT_DILATION_PX,
-    protection_mask: Optional[np.ndarray] = None,
+    dilated: np.ndarray,
+    band_px: int = SHADOW_BAND_PX,
 ) -> np.ndarray:
     """
-    Build a removal mask that is larger than the raw segmentation mask in two ways:
-
-    1. Flat dilation scaled to image resolution (dilation_px, but capped to avoid
-       destroying nearby objects protected by protection_mask).
-
-    2. Colour-contamination expansion: pixels in the band just outside the raw
-       mask that contain significant object-colour bleed are added to the
-       removal region.  This catches SAM2's feathered-edge semi-transparent
-       pixels that mix object + background colours.
-
-    The protection_mask (binary, 255 = protect) prevents expansion from
-    touching pixels claimed by other independently-segmented objects.
-
-    Args:
-        image_np:        (H, W, 3) uint8 RGB — original image.
-        hard_mask:       (H, W) uint8 — raw combined object mask (0/255).
-        dilation_px:     Base dilation radius.
-        protection_mask: (H, W) uint8 — pixels that must not be added (other objects).
-
-    Returns:
-        (H, W) uint8 removal mask (0/255) ready for inpainting.
+    Extend the mask downward to include cast-shadow pixels directly below
+    the object.  Detects dark pixels (< SHADOW_DARK_THRESHOLD) in the band
+    immediately below the mask's bottom edge.
     """
     h, w = image_np.shape[:2]
-    binary = (hard_mask > 128).astype(np.uint8)
+    result = dilated.copy()
 
-    # ── 1. Scale-aware dilation ────────────────────────────────────────────
-    # Scale dilation_px by the geometric mean of image dimensions so that
-    # the same relative expansion is applied at different resolutions.
-    scale_factor = np.sqrt(h * w) / 1000.0
-    scaled_dil = max(4, int(dilation_px * min(scale_factor, 2.0)))
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (scaled_dil * 2 + 1, scaled_dil * 2 + 1)
-    )
-    dilated = cv2.dilate(binary, kernel, iterations=1)
+    # Bottom edge of the dilated mask
+    rows = np.any(dilated > 0, axis=1)
+    if not np.any(rows):
+        return result
+    bottom_row = int(np.where(rows)[0][-1])
 
-    # ── 2. Colour-contamination expansion ─────────────────────────────────
-    # Estimate the object's representative colour from pixels 4–12px inside
-    # the original mask (safely interior, no edge contamination).
-    inner_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (9, 9)
-    )
-    inner_core = cv2.erode(binary, inner_kernel, iterations=1)
-    core_pixels = image_np[inner_core > 0]
-
-    if len(core_pixels) >= 50:
-        obj_color_mean = np.median(core_pixels, axis=0).astype(np.float32)
-
-        # Build a band of pixels: outside the dilated mask but within
-        # COLOR_CONTAM_BAND_PX of the outer edge of the original mask
-        contam_kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE,
-            (COLOR_CONTAM_BAND_PX * 2 + 1, COLOR_CONTAM_BAND_PX * 2 + 1),
-        )
-        outer_band_mask = cv2.dilate(binary, contam_kernel, iterations=1)
-        band = (outer_band_mask > 0) & (dilated == 0)  # just outside dilated edge
-
-        if np.any(band):
-            band_pixels = image_np[band].astype(np.float32)
-            dists = np.linalg.norm(band_pixels - obj_color_mean, axis=1)
-            contaminated = np.zeros((h, w), dtype=bool)
-            contaminated[band] = dists < COLOR_CONTAM_MAX_DIST
-            dilated = np.maximum(dilated, contaminated.astype(np.uint8))
-            n_contam = int(np.sum(contaminated))
-            if n_contam > 0:
-                logger.debug(f"[restoration/mask] added {n_contam} colour-contaminated pixels")
-
-    result = (dilated * 255).astype(np.uint8)
-
-    # ── 3. Apply protection mask ───────────────────────────────────────────
-    if protection_mask is not None:
-        protected = (protection_mask > 128)
-        result[protected] = 0
+    # Scan band below the object
+    band_end = min(h, bottom_row + band_px + 1)
+    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    for row in range(bottom_row + 1, band_end):
+        # Only include dark pixels that are directly beneath existing mask columns
+        mask_cols = dilated[bottom_row] > 0
+        shadow_pixels = gray[row] < SHADOW_DARK_THRESHOLD
+        result[row] = np.maximum(result[row], (mask_cols & shadow_pixels).astype(np.uint8) * 255)
 
     return result
 
 
-def build_removal_mask(
-    refined_masks: List[np.ndarray],
-    dilation_px: int = DEFAULT_DILATION_PX,
-) -> np.ndarray:
+def build_object_removal_mask(
+    image_np: np.ndarray,
+    raw_mask: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Combine all per-object SAM2 masks into one binary removal mask.
-    (Simple version used when image_np is not available; adaptive version preferred.)
+    Build per-object removal mask (dilated + shadow) and feather mask.
+
+    Returns:
+        inpaint_mask  — hard binary (0/255) for LaMa / SDXL
+        feather_mask  — float32 [0,1] for compositing
     """
-    if not refined_masks:
-        return np.zeros((1, 1), dtype=np.uint8)
+    binary = (raw_mask > 128).astype(np.uint8) * 255
+    dil_px = _per_object_dilation(binary)
 
-    combined = np.zeros(refined_masks[0].shape[:2], dtype=np.uint8)
-    for m in refined_masks:
-        combined = np.maximum(combined, (m > 128).astype(np.uint8) * 255)
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (dil_px * 2 + 1, dil_px * 2 + 1)
+    )
+    dilated = cv2.dilate((binary > 0).astype(np.uint8), kernel, iterations=1) * 255
+    dilated = _add_contact_shadow(image_np, dilated)
 
-    if dilation_px > 0:
-        kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (dilation_px * 2 + 1, dilation_px * 2 + 1)
-        )
-        combined = cv2.dilate(combined, kernel, iterations=1)
+    # Feather mask — purely for compositing, not passed to inpaint model
+    dist = cv2.distanceTransform((dilated > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    feather = np.clip(dist / max(1.0, float(FEATHER_PX)), 0.0, 1.0)
+    k = max(3, FEATHER_PX // 2) | 1
+    feather = cv2.GaussianBlur(feather.astype(np.float32), (k, k), k / 3.0)
+    feather = np.clip(feather, 0.0, 1.0)
 
-    return combined
+    logger.debug(
+        f"[restoration/mask] dil={dil_px}px "
+        f"mask={int(np.sum(dilated > 0))}px "
+        f"({100 * np.mean(dilated > 0):.1f}% canvas)"
+    )
+    return dilated.astype(np.uint8), feather.astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Mask → padded bounding-box crop (fixes BUG C3, C6)
-# ---------------------------------------------------------------------------
+# ── LaMa Stage A ──────────────────────────────────────────────────────────
+
+def _lama_inpaint(image_np: np.ndarray, inpaint_mask: np.ndarray) -> np.ndarray:
+    """
+    Run LaMa (big-lama) on the full-resolution image.
+
+    image_np:    (H, W, 3) uint8 RGB
+    inpaint_mask: (H, W) uint8 binary (255 = fill)
+
+    Returns (H, W, 3) uint8 RGB.
+    Falls back to cv2 TELEA+NS if LaMa is unavailable.
+    """
+    # Pre-fill the hole with surrounding median colour so that if LaMa fails
+    # and we fall back to cv2, the object pixels don't contaminate propagation.
+    bg_pixels = image_np[inpaint_mask == 0]
+    bg_median = np.median(bg_pixels, axis=0).astype(np.uint8) if len(bg_pixels) >= 10 else np.array([128, 128, 128], dtype=np.uint8)
+    prefilled = image_np.copy()
+    prefilled[inpaint_mask > 0] = bg_median
+
+    try:
+        from services.text_service import _get_lama
+        lama = _get_lama()
+        if lama is not None:
+            logger.info(f"[restoration/A] LaMa inpaint — mask {int(np.sum(inpaint_mask > 0))} px")
+            result_pil = lama(Image.fromarray(prefilled), Image.fromarray(inpaint_mask))
+            result_np = np.array(result_pil.convert("RGB"))
+            if result_np.shape[:2] != image_np.shape[:2]:
+                result_np = cv2.resize(result_np, (image_np.shape[1], image_np.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+            # Guard: reject if LaMa reproduced the object
+            if not _lama_reproduced_object(image_np, result_np, inpaint_mask):
+                logger.info("[restoration/A] LaMa accepted")
+                return result_np
+            logger.warning("[restoration/A] LaMa reproduced the object — cv2 fallback")
+    except Exception as e:
+        logger.warning(f"[restoration/A] LaMa failed ({e}) — cv2 fallback")
+
+    # cv2 fallback on pre-filled image
+    logger.info("[restoration/A] cv2 TELEA+NS fallback")
+    bgr = cv2.cvtColor(prefilled, cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    radius = max(8, int(min(h, w) * 0.02))
+    radius = min(radius, 32)
+    result = cv2.inpaint(bgr, inpaint_mask, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
+    result = cv2.inpaint(result, inpaint_mask, inpaintRadius=max(4, radius // 2), flags=cv2.INPAINT_NS)
+    return cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+
+
+def _lama_reproduced_object(
+    original_np: np.ndarray,
+    result_np: np.ndarray,
+    inpaint_mask: np.ndarray,
+    threshold: float = 0.75,
+) -> bool:
+    """
+    Return True if more than `threshold` fraction of filled pixels match the
+    original object's interior colour — meaning LaMa just copied the object back.
+    """
+    binary = (inpaint_mask > 0).astype(np.uint8)
+    inner_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    inner = cv2.erode(binary, inner_k, iterations=1)
+    core = original_np[inner > 0] if np.any(inner > 0) else original_np[inpaint_mask > 0]
+    if len(core) < 10:
+        return False
+    obj_mean = np.median(core, axis=0).astype(np.float32)
+    result_inside = result_np[inpaint_mask > 0].astype(np.float32)
+    dists = np.linalg.norm(result_inside - obj_mean, axis=1)
+    return float(np.mean(dists < 12.0)) > threshold
+
+
+# ── SDXL Stage B ──────────────────────────────────────────────────────────
 
 def _mask_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
-    """Return (y1, x1, y2, x2) tight bounding box of the non-zero mask region."""
     rows = np.any(mask > 0, axis=1)
     cols = np.any(mask > 0, axis=0)
     if not np.any(rows):
@@ -209,334 +286,183 @@ def _mask_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
     return int(y1), int(x1), int(y2) + 1, int(x2) + 1
 
 
-def _padded_crop(
+def _padded_crop_coords(
     image_np: np.ndarray,
     mask: np.ndarray,
-    pad_factor: float = CONTEXT_PAD_FACTOR,
-    min_pad: int = MIN_CONTEXT_PAD_PX,
-) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
-    """
-    Crop image+mask to the mask's bounding box expanded by pad_factor on each side.
-
-    Returns (crop_img, crop_mask, (y1, x1, y2, x2)) where the coordinates
-    are in the FULL image coordinate system so the result can be pasted back.
-    """
+    pad_factor: float = SDXL_PAD_FACTOR,
+) -> Tuple[int, int, int, int]:
+    """Return (cy1, cx1, cy2, cx2) — bbox + 25% padding, clamped to image."""
     h, w = image_np.shape[:2]
     ty1, tx1, ty2, tx2 = _mask_bbox(mask)
-
-    obj_h = ty2 - ty1
-    obj_w = tx2 - tx1
-    pad_y = max(min_pad, int(obj_h * pad_factor))
-    pad_x = max(min_pad, int(obj_w * pad_factor))
-
-    cy1 = max(0, ty1 - pad_y)
-    cx1 = max(0, tx1 - pad_x)
-    cy2 = min(h, ty2 + pad_y)
-    cx2 = min(w, tx2 + pad_x)
-
-    return image_np[cy1:cy2, cx1:cx2].copy(), mask[cy1:cy2, cx1:cx2].copy(), (cy1, cx1, cy2, cx2)
+    obj_h, obj_w = ty2 - ty1, tx2 - tx1
+    py = max(20, int(obj_h * pad_factor))
+    px = max(20, int(obj_w * pad_factor))
+    return (
+        max(0, ty1 - py), max(0, tx1 - px),
+        min(h, ty2 + py), min(w, tx2 + px),
+    )
 
 
-def _paste_crop(
-    canvas: np.ndarray,
-    crop: np.ndarray,
-    coords: Tuple[int, int, int, int],
-    blend_mask: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Paste a crop back into a canvas at the given coordinates.
-
-    If blend_mask is provided (float32, 0-1, same size as crop), it is used
-    for alpha compositing instead of a hard paste.
-    """
-    result = canvas.copy()
-    cy1, cx1, cy2, cx2 = coords
-    if blend_mask is None:
-        result[cy1:cy2, cx1:cx2] = crop
-    else:
-        bm = blend_mask[:, :, np.newaxis]
-        orig_region = canvas[cy1:cy2, cx1:cx2].astype(np.float32)
-        crop_f = crop.astype(np.float32)
-        blended = orig_region * (1.0 - bm) + crop_f * bm
-        result[cy1:cy2, cx1:cx2] = np.clip(blended, 0, 255).astype(np.uint8)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Complexity routing
-# ---------------------------------------------------------------------------
-
-def _needs_generative(
-    image_np: np.ndarray,
-    removal_mask: np.ndarray,
-    force: bool,
-) -> bool:
-    if force:
-        return True
-
-    h, w = image_np.shape[:2]
-    hole_fraction = float(np.sum(removal_mask > 0)) / max(h * w, 1)
-
-    if hole_fraction > GENERATIVE_THRESHOLD:
-        logger.info(f"[restoration] hole={hole_fraction:.1%} → Stage B")
-        return True
-
-    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    bg = (removal_mask == 0)
-    edge_density = float(np.sum(edges[bg] > 0)) / max(int(np.sum(bg)), 1)
-
-    if edge_density > COMPLEX_SCENE_EDGE_THRESHOLD:
-        logger.info(f"[restoration] bg edge_density={edge_density:.3f} → Stage B")
-        return True
-
-    logger.info(f"[restoration] hole={hole_fraction:.1%}, edge={edge_density:.3f} → Stage A")
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Stage A — Classical inpainting on a padded crop (fixes BUG C3)
-# ---------------------------------------------------------------------------
-
-def _stage_a(image_np: np.ndarray, removal_mask: np.ndarray) -> np.ndarray:
-    """
-    Classical inpainting using cv2 TELEA + NS on a padded crop.
-
-    Critical fix: before running cv2.inpaint, we replace the hole pixels in
-    the crop with the median colour of the surrounding background.  cv2.inpaint
-    propagates from the hole *boundary* inward — if the hole still contains the
-    original object pixels, those colours contaminate the propagation and the
-    object can bleed back into the result.  Pre-zeroing forces propagation
-    from clean background only.
-    """
-    logger.info("[restoration/A] cv2 TELEA + NS inpainting (padded crop, pre-zeroed hole)…")
-
-    crop_img, crop_mask, coords = _padded_crop(image_np, removal_mask)
-    cy1, cx1, cy2, cx2 = coords
-
-    # ── Pre-zero the hole with median background colour ────────────────────
-    # Sample background pixels in the crop (outside the mask)
-    bg_pixels = crop_img[crop_mask == 0]
-    if len(bg_pixels) >= 10:
-        bg_median = np.median(bg_pixels, axis=0).astype(np.uint8)
-    else:
-        bg_median = np.array([128, 128, 128], dtype=np.uint8)
-
-    crop_prezeroed = crop_img.copy()
-    crop_prezeroed[crop_mask > 0] = bg_median  # replace object with flat bg colour
-
-    bgr_crop = cv2.cvtColor(crop_prezeroed, cv2.COLOR_RGB2BGR)
-
-    crop_h, crop_w = crop_img.shape[:2]
-    radius = max(8, int(min(crop_h, crop_w) * 0.08))
-    radius = min(radius, 32)
-
-    result_bgr = cv2.inpaint(bgr_crop, crop_mask, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
-    result_bgr = cv2.inpaint(result_bgr, crop_mask, inpaintRadius=max(4, radius // 2), flags=cv2.INPAINT_NS)
-
-    result_crop = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
-
-    full_result = image_np.copy()
-    full_result[cy1:cy2, cx1:cx2][crop_mask > 0] = result_crop[crop_mask > 0]
-
-    logger.info("[restoration/A] cv2 inpainting complete")
-    return full_result
-
-
-# ---------------------------------------------------------------------------
-# Stage B — Generative inpainting on a padded crop with soft mask (fixes C5, C6)
-# ---------------------------------------------------------------------------
-
-def _soft_mask(mask: np.ndarray, sigma: float = MASK_BLUR_SIGMA) -> np.ndarray:
-    """
-    Blur a binary mask to produce a soft gradient edge.
-    Returns float32 [0,1] mask.
-    The core (pixels far inside) stays near 1; the boundary feathers to 0.
-    """
-    binary_f = (mask > 0).astype(np.float32)
-    k = int(sigma * 6) | 1  # ensure odd
-    blurred = cv2.GaussianBlur(binary_f, (k, k), sigma)
-    # Re-normalise so the interior stays 1.0
-    if blurred.max() > 0:
-        blurred = blurred / blurred.max()
-    return blurred
-
-
-def _resize_for_inpaint(
+def _resize_for_sdxl(
     image_np: np.ndarray,
     mask: np.ndarray,
     max_dim: int = MAX_INPAINT_DIM,
+    min_scale: float = 0.9,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Downscale if needed; never below min_scale of original crop."""
     h, w = image_np.shape[:2]
     scale = 1.0
     if max(h, w) > max_dim:
-        scale = max_dim / max(h, w)
+        scale = max(min_scale, max_dim / max(h, w))
         nw, nh = int(w * scale), int(h * scale)
         image_np = cv2.resize(image_np, (nw, nh), interpolation=cv2.INTER_AREA)
         mask = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
     h2, w2 = image_np.shape[:2]
-    nw = (w2 // 8) * 8
-    nh = (h2 // 8) * 8
-    if nw != w2 or nh != h2:
-        image_np = cv2.resize(image_np, (nw, nh), interpolation=cv2.INTER_AREA)
-        mask = cv2.resize(mask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+    nw2 = (w2 // 8) * 8 or 8
+    nh2 = (h2 // 8) * 8 or 8
+    if nw2 != w2 or nh2 != h2:
+        image_np = cv2.resize(image_np, (nw2, nh2), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(mask, (nw2, nh2), interpolation=cv2.INTER_NEAREST)
     return image_np, mask, scale
 
 
-def _guard_original_pixels(
-    original_np: np.ndarray,
-    result_np: np.ndarray,
-    removal_mask: np.ndarray,
-) -> bool:
-    """
-    Return True only when the inpaint model clearly reproduced the original
-    object pixels inside the mask (i.e. completely failed to inpaint).
-
-    Previous version: compared result to raw original pixels inside mask.
-    Problem: on a shoe ad with a red background, the shoe is also red — the
-    background reconstruction might be nearly identical to the non-shoe parts
-    of the original, triggering a false rejection and falling back to Stage A,
-    which then propagates the shoe back into the hole.
-
-    Fixed approach: compare the result pixels inside the mask to the
-    *object interior colour mean* (sampled deep inside the mask from the
-    original).  A valid background reconstruction will be far from the object
-    colour.  A failed reconstruction (object reproduced) will be close.
-
-    Only fires when the result is objectively identical to the original object
-    colour (same_frac > SAME_PIXEL_FRAC at a tighter L2 distance).
-    """
-    mask_bool = removal_mask > 0
-    if not np.any(mask_bool):
-        return False
-
-    # Estimate the object's interior colour from the original image.
-    # Erode the mask to get the core (avoids boundary background pixels).
-    binary = (removal_mask > 0).astype(np.uint8)
-    inner_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-    inner = cv2.erode(binary, inner_k, iterations=1)
-    core_pixels = original_np[inner > 0] if np.any(inner > 0) else original_np[mask_bool]
-
-    if len(core_pixels) < 10:
-        return False  # not enough pixels to judge — don't reject
-
-    obj_mean = np.median(core_pixels, axis=0).astype(np.float32)
-
-    # How similar is the result (inside the mask) to the original object colour?
-    result_inside = result_np[mask_bool].astype(np.float32)
-    dists_to_obj  = np.linalg.norm(result_inside - obj_mean, axis=1)
-    same_as_obj_frac = float(np.mean(dists_to_obj < SAME_PIXEL_DIST))
-
-    if same_as_obj_frac > SAME_PIXEL_FRAC:
-        logger.warning(
-            f"[restoration/B] {same_as_obj_frac:.0%} of result pixels match object colour "
-            f"(obj_mean={obj_mean.astype(int).tolist()}) — model reproduced the object, rejecting"
-        )
-        return True
-
-    logger.debug(
-        f"[restoration/B] guard: {same_as_obj_frac:.0%} match object colour — accepted"
-    )
-    return False
-
-
-def _build_inpaint_prompt(
+def _build_sdxl_prompts(
     image_np: np.ndarray,
-    object_labels: List[str],
-    removal_mask: np.ndarray,
-) -> str:
-    bg_pixels = image_np[(removal_mask == 0)]
-    if len(bg_pixels) > 0:
-        dom = np.median(bg_pixels, axis=0).astype(int)
-        colour_hint = f"dominant background colour approximately rgb({dom[0]},{dom[1]},{dom[2]})"
-    else:
-        colour_hint = "natural background"
-    objects_str = ", ".join(object_labels) if object_labels else "objects"
-    return (
-        f"Remove the {objects_str} completely. Reconstruct only the background that would "
-        f"naturally exist behind them. Continue the surrounding structure, texture, perspective, "
-        f"and lighting. {colour_hint}. "
-        f"Do not reproduce any part of the removed subjects. "
-        f"Clean, seamless, photorealistic background continuation. No outlines, no halos."
+    inpaint_mask: np.ndarray,
+    label: str,
+) -> Tuple[str, str]:
+    """
+    Build SDXL prompts from background pixel statistics only.
+
+    POSITIVE: colour name + "seamless texture, empty background"
+              — NEVER contains the object label or "no X" negations
+    NEGATIVE: object label + broad suppression list
+    """
+    # Sample ring of background pixels around the mask
+    binary = (inpaint_mask > 0).astype(np.uint8)
+    band_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (49, 49))
+    outer = cv2.dilate(binary, band_k, iterations=1)
+    ring = (outer > 0) & (binary == 0)
+    bg_pixels = image_np[ring] if np.any(ring) else image_np[binary == 0]
+    if len(bg_pixels) == 0:
+        bg_pixels = image_np.reshape(-1, 3)
+
+    dom_rgb = np.median(bg_pixels, axis=0).astype(np.uint8)
+    colour = _colour_name(dom_rgb)
+
+    positive = f"seamless {colour} textured surface, empty background, no objects"
+    negative = (
+        f"{label}, shoe, sneaker, boot, product, clothing, person, human, animal, "
+        f"object, logo, text, letters, watermark, brand, silhouette, shadow, duplicate, "
+        f"artifact, blurry, low quality, distorted"
     )
+    return positive, negative
 
 
-def _stage_b_local(
-    image_np: np.ndarray,
-    removal_mask: np.ndarray,
-    prompt: str,
-    steps: int,
-    stage_a_result: np.ndarray,
-    object_labels: Optional[List[str]] = None,
+def _blurred_proxy_mask(
+    mask: np.ndarray,
+    sigma: float = 20.0,
 ) -> np.ndarray:
     """
-    Local generative inpainting on a padded crop with a soft mask.
+    Build a heavily blurred version of the mask to pass to SDXL, eliminating
+    the shape cue.  SDXL sees a soft blob instead of a shoe silhouette.
+    Returns (H, W) uint8 [0..255].
+    """
+    binary_f = (mask > 0).astype(np.float32)
+    k = int(sigma * 6) | 1
+    blurred = cv2.GaussianBlur(binary_f, (k, k), sigma)
+    if blurred.max() > 0:
+        blurred /= blurred.max()
+    return (blurred * 255).astype(np.uint8)
 
-    Crops a padded region around the object, runs SDXL inpainting at high
-    effective resolution, pastes the result back.  The mask fed to SDXL is
-    Gaussian-blurred for natural boundary transitions.
+
+def _sdxl_refine(
+    lama_result: np.ndarray,
+    original_np: np.ndarray,
+    inpaint_mask: np.ndarray,
+    feather_mask: np.ndarray,
+    label: str,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    Optional SDXL texture-refinement pass on the LaMa output.
+
+    Runs SDXL on a per-object crop at low strength (0.35) using a blurred
+    proxy mask.  Composites result back inside the real feather mask only.
+
+    Returns full-canvas (H, W, 3) RGB, or lama_result on failure.
     """
     from services.model_manager import model_manager
     import torch
 
-    orig_h, orig_w = image_np.shape[:2]
+    h, w = lama_result.shape[:2]
+    hole_frac = float(np.sum(inpaint_mask > 0)) / max(h * w, 1)
 
-    # ── Crop context window around hole ───────────────────────────────────
-    crop_img, crop_mask_hard, coords = _padded_crop(image_np, removal_mask)
-    cy1, cx1, cy2, cx2 = coords
+    if hole_frac < SDXL_MIN_HOLE_FRAC:
+        logger.info(f"[restoration/B] hole={hole_frac:.1%} < {SDXL_MIN_HOLE_FRAC:.0%} → skip SDXL")
+        return lama_result
 
-    # Soft mask for SDXL (gradient edge, not hard binary)
-    crop_mask_soft_f = _soft_mask(crop_mask_hard, sigma=MASK_BLUR_SIGMA)
-    crop_mask_soft = (np.clip(crop_mask_soft_f * 255, 0, 255)).astype(np.uint8)
+    # Crop around object
+    cy1, cx1, cy2, cx2 = _padded_crop_coords(lama_result, inpaint_mask)
+    crop_lama  = lama_result[cy1:cy2, cx1:cx2].copy()
+    crop_mask  = inpaint_mask[cy1:cy2, cx1:cx2]
+    crop_feat  = feather_mask[cy1:cy2, cx1:cx2]
 
-    # Resize crop for model
-    crop_small, mask_small, scale = _resize_for_inpaint(crop_img, crop_mask_soft)
-    ch, cw = crop_small.shape[:2]
+    # Blurred proxy mask for SDXL (removes shape cue)
+    proxy_mask = _blurred_proxy_mask(crop_mask, sigma=20.0)
 
-    image_pil = Image.fromarray(crop_small)
-    mask_pil  = Image.fromarray(mask_small).convert("RGB")
+    # Resize for model
+    crop_s, proxy_s, scale = _resize_for_sdxl(crop_lama, proxy_mask)
+    ch, cw = crop_s.shape[:2]
 
-    logger.info(f"[restoration/B] SDXL on crop {cw}×{ch} (orig {orig_w}×{orig_h}) steps={steps}")
+    positive, negative = _build_sdxl_prompts(original_np, inpaint_mask, label)
 
-    # Negative prompt: explicitly suppress the objects we removed
-    _labels = object_labels or []
-    objects_str = ", ".join(_labels) if _labels else "object"
-    negative_prompt = (
-        f"{objects_str}, product, shoe, sneaker, clothing, person, animal, "
-        f"watermark, text, logo, duplicate, artifact, blurry, low quality"
+    logger.info(
+        f"[restoration/B] SDXL refine crop=({cy1},{cx1},{cy2},{cx2}) "
+        f"model={cw}×{ch} scale={scale:.2f} strength={SDXL_STRENGTH} "
+        f"guidance={SDXL_GUIDANCE} steps={SDXL_STEPS} seed={seed}"
     )
+    logger.info(f"[restoration/B] positive='{positive}'")
+    logger.info(f"[restoration/B] negative='{negative}'")
+
+    _debug_save(f"sdxl_crop_{label}", crop_s, proxy_s)
 
     try:
         pipe = model_manager.get_inpaint_pipe()
-        gen  = torch.Generator(device="cpu").manual_seed(42)
+        gen  = torch.Generator(device="cpu").manual_seed(seed)
         out = pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=image_pil,
-            mask_image=mask_pil,
+            prompt=positive,
+            negative_prompt=negative,
+            image=Image.fromarray(crop_s),
+            mask_image=Image.fromarray(proxy_s).convert("RGB"),
             height=ch,
             width=cw,
-            num_inference_steps=steps,
-            guidance_scale=12.0,   # raised from 7.5 — forces stronger adherence to prompt
+            num_inference_steps=SDXL_STEPS,
+            guidance_scale=SDXL_GUIDANCE,
+            strength=SDXL_STRENGTH,
             generator=gen,
         ).images[0]
 
         result_crop = np.array(out.convert("RGB"))
         if scale < 1.0:
-            result_crop = cv2.resize(
-                result_crop, (cx2 - cx1, cy2 - cy1), interpolation=cv2.INTER_LANCZOS4
-            )
+            result_crop = cv2.resize(result_crop, (cx2 - cx1, cy2 - cy1), interpolation=cv2.INTER_LANCZOS4)
 
-        # Only accept pixels where the crop mask is active
-        full_result = image_np.copy()
-        crop_mask_paste = crop_mask_hard > 0
-        full_result[cy1:cy2, cx1:cx2][crop_mask_paste] = result_crop[crop_mask_paste]
+        # Composite SDXL result back inside the REAL feather mask only
+        # (not the blurred proxy — this is where shape-cue suppression matters)
+        feat3 = crop_feat[:, :, np.newaxis]
+        blended_crop = (
+            crop_lama.astype(np.float32) * (1.0 - feat3)
+            + result_crop.astype(np.float32) * feat3
+        )
+        blended_crop = np.clip(blended_crop, 0, 255).astype(np.uint8)
 
-        if _guard_original_pixels(image_np, full_result, removal_mask):
-            logger.warning("[restoration/B] SDXL returned original pixels → FLUX fallback")
-            raise RuntimeError("guard failed")
+        full_result = lama_result.copy()
+        full_result[cy1:cy2, cx1:cx2] = blended_crop
 
-        logger.info("[restoration/B] SDXL accepted")
+        # Hard-lock unmasked pixels
+        full_result[inpaint_mask == 0] = lama_result[inpaint_mask == 0]
+
+        logger.info("[restoration/B] SDXL refine accepted")
         try:
             model_manager.unload_inpaint_pipe()
         except Exception:
@@ -544,470 +470,321 @@ def _stage_b_local(
         return full_result
 
     except Exception as e:
-        logger.warning(f"[restoration/B] SDXL failed ({e}), trying FLUX.1 Fill…")
-
-    # Fallback: FLUX.1 Fill (operates on full image, already handles large context)
-    try:
-        from services.flux_inpaint_service import reconstruct_background_with_flux
-        result_pil = reconstruct_background_with_flux(
-            original_image=Image.fromarray(image_np),
-            combined_mask=removal_mask,
-            prompt=prompt,
-            num_inference_steps=steps,
-            guidance_scale=3.5,
-            max_image_size=MAX_INPAINT_DIM,
-        )
-        result_np = np.array(result_pil.convert("RGB"))
-        if _guard_original_pixels(image_np, result_np, removal_mask):
-            logger.warning("[restoration/B] FLUX returned original pixels → Stage A fallback")
-            return stage_a_result
-        logger.info("[restoration/B] FLUX.1 Fill accepted")
-        return result_np
-    except Exception as fe:
-        logger.warning(f"[restoration/B] FLUX failed ({fe}) → Stage A fallback")
-        return stage_a_result
+        logger.warning(f"[restoration/B] SDXL refine failed ({e}) — using LaMa result")
+        return lama_result
 
 
-def _stage_b_remote(
+# ── Validation with Grounding DINO ────────────────────────────────────────
+
+def _validate_restoration(
     image_np: np.ndarray,
-    removal_mask: np.ndarray,
-    prompt: str,
-    steps: int,
-    stage_a_result: np.ndarray,
-) -> np.ndarray:
-    from services.remote_services.inpaint import inpaint_remote
-
-    orig_h, orig_w = image_np.shape[:2]
-    crop_img, crop_mask_hard, coords = _padded_crop(image_np, removal_mask)
-    cy1, cx1, cy2, cx2 = coords
-
-    crop_mask_soft = (np.clip(_soft_mask(crop_mask_hard) * 255, 0, 255)).astype(np.uint8)
-    crop_small, mask_small, scale = _resize_for_inpaint(crop_img, crop_mask_soft)
-
-    rgba = Image.fromarray(crop_small).convert("RGBA")
-    rgba.putalpha(Image.fromarray(mask_small))
-
+    restored_np: np.ndarray,
+    inpaint_mask: np.ndarray,
+    label: str,
+) -> bool:
+    """
+    Run Grounding DINO on the restored hole region with "{label} . text . logo".
+    Returns True if the restoration is clean (no object detected at > 0.3).
+    """
     try:
-        result_rgba = inpaint_remote(rgba, prompt, strength=0.99, guidance_scale=7.5, steps=steps)
-        result_crop = np.array(result_rgba.convert("RGB"))
-        if scale < 1.0:
-            result_crop = cv2.resize(result_crop, (cx2 - cx1, cy2 - cy1), interpolation=cv2.INTER_LANCZOS4)
+        from services.model_manager import model_manager, DEVICE
+        import torch
 
-        full_result = image_np.copy()
-        full_result[cy1:cy2, cx1:cx2][crop_mask_hard > 0] = result_crop[crop_mask_hard > 0]
+        model, processor = model_manager.get_grounding_dino()
+        h, w = restored_np.shape[:2]
 
-        if _guard_original_pixels(image_np, full_result, removal_mask):
-            logger.warning("[restoration/B/remote] returned original pixels → Stage A fallback")
-            return stage_a_result
-        return full_result
+        # Crop the restored hole region
+        ty1, tx1, ty2, tx2 = _mask_bbox(inpaint_mask)
+        pad = 10
+        ry1 = max(0, ty1 - pad); rx1 = max(0, tx1 - pad)
+        ry2 = min(h, ty2 + pad); rx2 = min(w, tx2 + pad)
+        region = restored_np[ry1:ry2, rx1:rx2]
+
+        region_pil = Image.fromarray(region)
+        text_prompt = f"{label} . text . logo ."
+        inputs = processor(images=region_pil, text=text_prompt, return_tensors="pt").to(DEVICE)
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+
+        region_h, region_w = region.shape[:2]
+        try:
+            results = processor.post_process_grounded_object_detection(
+                outputs, inputs.input_ids,
+                box_threshold=0.1, text_threshold=0.1,
+                target_sizes=[(region_h, region_w)],
+            )[0]
+        except TypeError:
+            results = processor.post_process_grounded_object_detection(
+                outputs=outputs, input_ids=inputs.input_ids,
+                target_sizes=[(region_h, region_w)],
+            )[0]
+            keep = results["scores"] > 0.1
+            results = {
+                "scores": results["scores"][keep],
+                "labels": [results["labels"][i] for i, k in enumerate(keep.tolist()) if k],
+            }
+
+        if len(results["scores"]) == 0:
+            logger.info(f"[restoration/validate] no detections — clean")
+            return True
+
+        top_score = float(results["scores"].max())
+        top_label = results["labels"][int(results["scores"].argmax())]
+        logger.info(f"[restoration/validate] top detection: '{top_label}' score={top_score:.3f}")
+
+        if top_score > DINO_DETECT_THRESHOLD:
+            logger.warning(
+                f"[restoration/validate] '{top_label}' detected at {top_score:.2f} > "
+                f"{DINO_DETECT_THRESHOLD} — restoration failed"
+            )
+            return False
+        return True
+
     except Exception as e:
-        logger.warning(f"[restoration/B/remote] failed ({e}) → Stage A fallback")
-        return stage_a_result
+        logger.warning(f"[restoration/validate] DINO validation failed ({e}) — assuming clean")
+        return True
 
 
-def _stage_b(
-    image_np: np.ndarray,
-    removal_mask: np.ndarray,
-    object_labels: List[str],
-    steps: int,
-    stage_a_result: np.ndarray,
-) -> np.ndarray:
-    from services.remote_config import remote_cfg
-    prompt = _build_inpaint_prompt(image_np, object_labels, removal_mask)
-    if remote_cfg.COMPUTE_MODE == "remote":
-        return _stage_b_remote(image_np, removal_mask, prompt, steps, stage_a_result)
-    return _stage_b_local(
-        image_np, removal_mask, prompt, steps, stage_a_result,
-        object_labels=object_labels,
-    )
+# ── Blend ──────────────────────────────────────────────────────────────────
 
-
-# ---------------------------------------------------------------------------
-# Color decontamination (fixes BUG C4 residual bleed after inpaint)
-# ---------------------------------------------------------------------------
-
-def _color_decontaminate(
+def _feathered_alpha_blend(
     original_np: np.ndarray,
     restored_np: np.ndarray,
-    removal_mask: np.ndarray,
-    band_px: int = COLOR_CONTAM_BAND_PX,
+    feather_mask: np.ndarray,
 ) -> np.ndarray:
     """
-    Replace residual object-coloured pixels in the narrow band just inside
-    the removal mask boundary with the surrounding restored pixels.
-
-    After inpainting, a few pixels at the very edge of the mask can still
-    carry object-colour bleed because:
-      a) cv2.inpaint's radius-limited propagation didn't fully overwrite them.
-      b) The SDXL model blended a small amount of the original at the edge.
-
-    Strategy: build a thin inner shell (band_px wide) of the removal mask.
-    For each pixel in that shell, compare its L2 distance to the object-colour
-    mean.  If it's too close to the object colour, replace it with a
-    distance-weighted average of its immediate restored neighbours.
+    Composite restored pixels into the original using the feather weight map.
+    weight=1.0 → use restored; weight=0.0 → use original.
+    Hard-locks all pixels with weight==0 to the exact original.
     """
-    binary = (removal_mask > 0).astype(np.uint8)
-
-    # Inner core: pixels deeply inside the mask (not on the boundary)
-    inner_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    inner = cv2.erode(binary, inner_kernel, iterations=1)
-
-    # Estimate object colour from a small interior zone of the ORIGINAL image
-    # (before any restoration — we want the object's colours, not the fill).
-    core_pixels = original_np[inner > 0]
-    if len(core_pixels) < 20:
-        # Not enough interior pixels — skip decontamination
-        return restored_np
-
-    obj_mean = np.median(core_pixels, axis=0).astype(np.float32)
-
-    # Outer shell of the removal mask
-    band_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (band_px * 2 + 1, band_px * 2 + 1)
+    w3 = feather_mask[:, :, np.newaxis]
+    blended = (
+        original_np.astype(np.float32) * (1.0 - w3)
+        + restored_np.astype(np.float32) * w3
     )
-    dilated_binary = cv2.dilate(binary, band_kernel, iterations=1)
-    shell = (dilated_binary > 0) & (inner == 0)  # ring between eroded and dilated
-
-    if not np.any(shell):
-        return restored_np
-
-    result = restored_np.copy()
-    shell_pixels = restored_np[shell].astype(np.float32)
-    dists = np.linalg.norm(shell_pixels - obj_mean, axis=1)
-
-    # Pixels in the shell that are still object-coloured
-    contaminated_in_shell = shell.copy()
-    contaminated_in_shell[shell] = dists < (COLOR_CONTAM_MAX_DIST * 0.7)
-
-    if not np.any(contaminated_in_shell):
-        return restored_np
-
-    # Replace contaminated pixels with Gaussian-blurred restored image
-    # (this pulls in clean surrounding background colour)
-    blur_sigma = max(4.0, band_px * 1.5)
-    k = int(blur_sigma * 4) | 1
-    blurred = cv2.GaussianBlur(restored_np, (k, k), blur_sigma)
-    result[contaminated_in_shell] = blurred[contaminated_in_shell]
-
-    n = int(np.sum(contaminated_in_shell))
-    logger.debug(f"[restoration/decontam] replaced {n} residual object-colour pixels in shell")
+    result = np.clip(blended, 0, 255).astype(np.uint8)
+    result[feather_mask == 0] = original_np[feather_mask == 0]
     return result
-
-
-# ---------------------------------------------------------------------------
-# Stage C — Correct feathered seam blend + Poisson (fixes BUG C1, C7, C8)
-# ---------------------------------------------------------------------------
-
-def _build_feather_weight(
-    removal_mask: np.ndarray,
-    feather_px: int = SEAM_FEATHER_PX,
-) -> np.ndarray:
-    """
-    Build a float32 weight map [0..1] for compositing:
-      0.0 = use original (outside mask)
-      1.0 = use reconstructed (inside mask)
-      smooth ramp in the feather band
-
-    FIXED vs. previous version:
-    - No longer multiplies by (feather_px / max_dist_inside) which collapsed
-      all weights to near-zero for large objects.
-    - Uses a pure distance-transform ramp clamped to [0, feather_px]:
-        weight = min(dist_inside, feather_px) / feather_px
-    - Then applies a single Gaussian blur to smooth staircase artefacts,
-      but does NOT apply hard overrides at the extremes (those created rings).
-    - Interior pixels (dist_inside > feather_px) get weight 1.0 via the clamp.
-    - Boundary pixels (dist_inside == 0) get weight 0.0 via the clamp.
-    """
-    binary = (removal_mask > 0).astype(np.uint8)
-    dist_inside = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-
-    # Correct ramp: linear from 0 at boundary to 1.0 at feather_px inside
-    weight = np.clip(dist_inside / max(1.0, float(feather_px)), 0.0, 1.0)
-
-    # Smooth the ramp to remove Euclidean-distance staircase artefacts
-    # Use a small kernel — we want smoothing of the ramp shape, not blurring
-    k = max(3, feather_px // 4) | 1
-    weight = cv2.GaussianBlur(weight, (k, k), k / 3.0)
-
-    # Re-clamp after blur to prevent values outside [0,1] from accumulating
-    weight = np.clip(weight, 0.0, 1.0)
-
-    return weight.astype(np.float32)
-
-
-def _colour_match_crop(
-    original_np: np.ndarray,
-    reconstructed_np: np.ndarray,
-    removal_mask: np.ndarray,
-    band_px: int = 24,
-) -> np.ndarray:
-    """
-    Adjust the reconstructed image's colour inside the removal mask so that
-    its mean and std match the original's background pixels in the boundary band.
-
-    This eliminates gross colour/exposure mismatches from generative models
-    (different white balance, tone mapping) without distorting textures.
-    """
-    # Sample background pixels in a band just outside the removal mask
-    binary = (removal_mask > 0).astype(np.uint8)
-    band_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (band_px * 2 + 1, band_px * 2 + 1)
-    )
-    outer_dilated = cv2.dilate(binary, band_kernel, iterations=1)
-    outer_band = (outer_dilated > 0) & (binary == 0)
-
-    if not np.any(outer_band) or not np.any(binary):
-        return reconstructed_np
-
-    ref_pixels = original_np[outer_band].astype(np.float32)
-    gen_pixels  = reconstructed_np[binary > 0].astype(np.float32)
-
-    if len(ref_pixels) < 10 or len(gen_pixels) < 10:
-        return reconstructed_np
-
-    ref_mean = ref_pixels.mean(axis=0)
-    ref_std  = ref_pixels.std(axis=0) + 1e-6
-    gen_mean = gen_pixels.mean(axis=0)
-    gen_std  = gen_pixels.std(axis=0) + 1e-6
-
-    result = reconstructed_np.astype(np.float32).copy()
-    inside = binary > 0
-    # Normalise generated pixels to ref statistics
-    for c in range(3):
-        result[inside, c] = (result[inside, c] - gen_mean[c]) / gen_std[c] * ref_std[c] + ref_mean[c]
-
-    return np.clip(result, 0, 255).astype(np.uint8)
 
 
 def _poisson_blend(
     original_np: np.ndarray,
-    reconstructed_np: np.ndarray,
-    removal_mask: np.ndarray,
+    restored_np: np.ndarray,
+    inpaint_mask: np.ndarray,
 ) -> Optional[np.ndarray]:
-    """
-    Poisson / seamless clone blending for large holes.
-    Returns None if OpenCV seamlessClone fails (e.g. mask too close to border).
-    """
     try:
         h, w = original_np.shape[:2]
-        binary = (removal_mask > 0).astype(np.uint8) * 255
-
-        # cv2.seamlessClone needs the destination to be the original and the
-        # source to be the reconstructed image.  The mask marks the region to
-        # transfer from source → destination.
-        # Centre of the mask bounding box
+        binary = (inpaint_mask > 0).astype(np.uint8) * 255
         ys, xs = np.where(binary > 0)
         if len(ys) == 0:
             return None
-        cy = int((ys.min() + ys.max()) // 2)
-        cx = int((xs.min() + xs.max()) // 2)
-
-        # Poisson requires mask not to touch the image border
         if ys.min() < 2 or ys.max() > h - 3 or xs.min() < 2 or xs.max() > w - 3:
             return None
-
-        src_bgr = cv2.cvtColor(reconstructed_np, cv2.COLOR_RGB2BGR)
+        cy = int((ys.min() + ys.max()) // 2)
+        cx = int((xs.min() + xs.max()) // 2)
+        src_bgr = cv2.cvtColor(restored_np, cv2.COLOR_RGB2BGR)
         dst_bgr = cv2.cvtColor(original_np, cv2.COLOR_RGB2BGR)
         result_bgr = cv2.seamlessClone(src_bgr, dst_bgr, binary, (cx, cy), cv2.NORMAL_CLONE)
         return cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
     except Exception as e:
-        logger.debug(f"[restoration/C] Poisson blend failed ({e}) — using alpha blend")
+        logger.debug(f"[restoration/blend] Poisson failed ({e})")
         return None
 
 
-def _stage_c(
+def _blend(
     original_np: np.ndarray,
-    reconstructed_np: np.ndarray,
-    removal_mask: np.ndarray,
+    restored_np: np.ndarray,
+    inpaint_mask: np.ndarray,
+    feather_mask: np.ndarray,
 ) -> np.ndarray:
     """
-    Blend reconstructed pixels into the original image.
-
-    Steps:
-    1. Colour-match: align reconstructed region's mean/std to surrounding bg.
-    2. Weight map: linear distance-transform ramp (FIXED — no broken normalisation).
-    3. Poisson blend for large holes (>POISSON_THRESHOLD fraction of canvas).
-    4. Weighted alpha blend as primary or fallback.
-    5. Hard-clamp: pixels outside removal_mask are exactly the original.
+    Always feathered alpha composite.
+    Poisson only when hole < POISSON_MAX_HOLE_FRAC (avoids artefacts on large holes).
     """
-    logger.info("[restoration/C] seam blending…")
-
     h, w = original_np.shape[:2]
-    hole_frac = float(np.sum(removal_mask > 0)) / max(h * w, 1)
+    hole_frac = float(np.sum(inpaint_mask > 0)) / max(h * w, 1)
 
-    # ── 1. Colour match ────────────────────────────────────────────────────
-    recon_matched = _colour_match_crop(original_np, reconstructed_np, removal_mask)
+    if hole_frac < POISSON_MAX_HOLE_FRAC:
+        logger.info(f"[restoration/blend] hole={hole_frac:.1%} → Poisson + feather")
+        poisson = _poisson_blend(original_np, restored_np, inpaint_mask)
+        if poisson is not None:
+            result = _feathered_alpha_blend(original_np, poisson, feather_mask)
+            result[inpaint_mask == 0] = original_np[inpaint_mask == 0]
+            return result
+        logger.debug("[restoration/blend] Poisson failed — feather only")
 
-    # ── 2. Try Poisson for large holes ─────────────────────────────────────
-    final = None
-    if hole_frac > POISSON_THRESHOLD:
-        logger.info(f"[restoration/C] hole={hole_frac:.1%} → Poisson blend")
-        final = _poisson_blend(original_np, recon_matched, removal_mask)
-        if final is not None:
-            logger.info("[restoration/C] Poisson blend accepted")
-
-    # ── 3. Fallback: distance-transform feathered alpha blend ──────────────
-    if final is None:
-        weight = _build_feather_weight(removal_mask, feather_px=SEAM_FEATHER_PX)
-        w3 = weight[:, :, np.newaxis]
-        blended = (
-            original_np.astype(np.float32) * (1.0 - w3)
-            + recon_matched.astype(np.float32) * w3
-        )
-        final = np.clip(blended, 0, 255).astype(np.uint8)
-
-    # ── 4. Hard-lock: unmasked pixels are EXACTLY the original ─────────────
-    bg = (removal_mask == 0)
-    final[bg] = original_np[bg]
-
-    logger.info("[restoration/C] seam blending complete")
-    return final
-
-
-# ---------------------------------------------------------------------------
-# Main public entry point
-# ---------------------------------------------------------------------------
-
-def restore_background(
-    image_np: np.ndarray,
-    union_mask: np.ndarray,
-    object_labels: Optional[List[str]] = None,
-    refined_masks: Optional[List[np.ndarray]] = None,
-    force_generative: bool = False,
-    steps: int = 20,
-    dilation_px: int = DEFAULT_DILATION_PX,
-    protection_mask: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Reconstruct the background behind all removed objects.
-
-    Args:
-        image_np:         Original (H, W, 3) uint8 RGB.
-        union_mask:       Combined object mask (H, W) uint8 (0/255).
-        object_labels:    Removed object names (for prompt).
-        refined_masks:    Individual per-object masks (enables adaptive mask).
-        force_generative: Always run Stage B.
-        steps:            Diffusion steps for Stage B.
-        dilation_px:      Base dilation radius.
-        protection_mask:  Pixels that must not be removed (other objects).
-
-    Returns:
-        (H, W, 3) uint8 RGB fully restored image.
-    """
-    if object_labels is None:
-        object_labels = []
-
-    orig_h, orig_w = image_np.shape[:2]
-    logger.info(
-        f"[restoration] {orig_w}×{orig_h} objects={object_labels} "
-        f"force_gen={force_generative} steps={steps} dil={dilation_px}"
-    )
-
-    # ── 0. Validate input ─────────────────────────────────────────────────
-    if union_mask.shape[:2] != (orig_h, orig_w):
-        union_mask = cv2.resize(union_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-
-    # ── 1. Adaptive removal mask ──────────────────────────────────────────
-    removal_mask = adaptive_removal_mask(
-        image_np=image_np,
-        hard_mask=union_mask,
-        dilation_px=dilation_px,
-        protection_mask=protection_mask,
-    )
-
-    if not np.any(removal_mask > 0):
-        logger.info("[restoration] mask is empty — returning original")
-        return image_np.copy()
-
-    logger.info(
-        f"[restoration] removal mask: {int(np.sum(removal_mask > 0))} px "
-        f"({100 * np.mean(removal_mask > 0):.1f}% of canvas)"
-    )
-
-    # ── 2. Stage A ────────────────────────────────────────────────────────
-    stage_a_result = _stage_a(image_np, removal_mask)
-
-    # ── 3. Stage B (conditional) ──────────────────────────────────────────
-    use_generative = _needs_generative(image_np, removal_mask, force_generative)
-    if use_generative:
-        reconstructed = _stage_b(image_np, removal_mask, object_labels, steps, stage_a_result)
-    else:
-        reconstructed = stage_a_result
-
-    # ── 4. Color decontamination ──────────────────────────────────────────
-    reconstructed = _color_decontaminate(image_np, reconstructed, removal_mask)
-
-    # ── 5. Stage C — seam blend ───────────────────────────────────────────
-    final = _stage_c(image_np, reconstructed, removal_mask)
-
-    logger.info(
-        f"[restoration] done ({'generative' if use_generative else 'classical'})"
-    )
-    return final
-
-
-# ---------------------------------------------------------------------------
-# Foreground edge decontamination (BUG C4 — object cutout bleed)
-# ---------------------------------------------------------------------------
-
-def decontaminate_foreground_edges(
-    object_rgba: np.ndarray,
-    band_px: int = 3,
-) -> np.ndarray:
-    """
-    Remove residual background-colour bleed from the edges of an object cutout.
-
-    SAM2 masks are feathered: the alpha channel transitions from 255 → 0 over
-    several pixels.  In that transition zone, the RGB values are a mix of
-    object + background colours.  This creates a coloured fringe on the
-    object's edges when composited over a different background.
-
-    Fix: for every pixel in the semi-transparent edge band (0 < alpha < 200),
-    estimate the "pure object colour" from nearby fully-opaque pixels and
-    replace the RGB with that estimate.  The alpha channel is NOT changed.
-
-    Args:
-        object_rgba: (H, W, 4) uint8 RGBA cutout.
-        band_px:     Width of the edge band to process.
-
-    Returns:
-        (H, W, 4) uint8 RGBA with decontaminated edges.
-    """
-    result = object_rgba.copy()
-    alpha = object_rgba[:, :, 3].astype(np.float32)
-
-    # Opaque core: alpha > 200
-    opaque = (alpha > 200).astype(np.uint8)
-    if not np.any(opaque):
-        return result
-
-    # Dilate the opaque core outward to get candidate reference pixels
-    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band_px * 2 + 1, band_px * 2 + 1))
-    ref_zone = cv2.dilate(opaque, kern, iterations=1)
-
-    for c in range(3):
-        channel = object_rgba[:, :, c].astype(np.float32)
-        # Build a "pure-object" approximation by Gaussian-blurring the opaque
-        # core — this propagates interior colours outward into the edge band
-        filled = channel.copy()
-        filled[opaque == 0] = 0  # zero out non-opaque pixels before blurring
-        weight = alpha.copy()
-        weight[opaque == 0] = 0
-        k = band_px * 4 + 1
-        filled_blur  = cv2.GaussianBlur(filled,  (k, k), band_px * 2)
-        weight_blur  = cv2.GaussianBlur(weight, (k, k), band_px * 2)
-        pure_color = np.where(weight_blur > 1e-3, filled_blur / (weight_blur + 1e-6), channel)
-
-        # Only apply in the semi-transparent edge band
-        edge_band = (alpha > 5) & (alpha < 200)
-        result[:, :, c] = np.where(edge_band, np.clip(pure_color, 0, 255), channel).astype(np.uint8)
-
+    result = _feathered_alpha_blend(original_np, restored_np, feather_mask)
+    result[inpaint_mask == 0] = original_np[inpaint_mask == 0]
+    logger.info(f"[restoration/blend] feathered alpha composite done (hole={hole_frac:.1%})")
     return result
 
 
-# ---------------------------------------------------------------------------
-# Utility: restore from saved mask files (on-demand endpoint)
-# ---------------------------------------------------------------------------
+# ── Per-object restoration ─────────────────────────────────────────────────
+
+def _restore_one_object(
+    image_np: np.ndarray,          # original full-res image
+    current_canvas: np.ndarray,    # working canvas (may already have other objects restored)
+    raw_mask: np.ndarray,          # SAM2 mask for THIS object
+    label: str,
+    use_sdxl: bool = True,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    Restore the background behind one object.
+
+    Uses current_canvas as both the inpaint source (so already-restored
+    regions are preserved) and the compositing base.
+
+    Returns updated canvas (H, W, 3) RGB.
+    """
+    logger.info(f"[restoration] restoring object '{label}'")
+
+    # Build per-object mask
+    inpaint_mask, feather_mask = build_object_removal_mask(image_np, raw_mask)
+
+    if not np.any(inpaint_mask > 0):
+        logger.warning(f"[restoration] '{label}': empty mask — skipping")
+        return current_canvas
+
+    _debug_save(f"input_{label}", current_canvas, inpaint_mask)
+
+    # Stage A — LaMa on the current canvas
+    lama_result = _lama_inpaint(current_canvas, inpaint_mask)
+    _debug_save(f"lama_{label}", lama_result)
+
+    # Stage B — SDXL texture refinement (conditional)
+    if use_sdxl:
+        refined = _sdxl_refine(
+            lama_result=lama_result,
+            original_np=image_np,
+            inpaint_mask=inpaint_mask,
+            feather_mask=feather_mask,
+            label=label,
+            seed=seed,
+        )
+    else:
+        refined = lama_result
+
+    # Validation — run DINO on the hole, retry once if detected
+    clean = _validate_restoration(image_np, refined, inpaint_mask, label)
+    if not clean:
+        logger.warning(f"[restoration] '{label}': validation failed — retrying with larger mask")
+        # Retry: add 15px extra dilation and different seed
+        binary = (inpaint_mask > 0).astype(np.uint8)
+        retry_k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (RETRY_EXTRA_DILATION * 2 + 1, RETRY_EXTRA_DILATION * 2 + 1)
+        )
+        retry_mask = cv2.dilate(binary, retry_k, iterations=1) * 255
+        retry_feather = _build_feather_float(retry_mask)
+
+        lama_retry = _lama_inpaint(current_canvas, retry_mask)
+        if use_sdxl:
+            refined_retry = _sdxl_refine(
+                lama_result=lama_retry,
+                original_np=image_np,
+                inpaint_mask=retry_mask,
+                feather_mask=retry_feather,
+                label=label,
+                seed=seed + 1,
+            )
+        else:
+            refined_retry = lama_retry
+
+        clean2 = _validate_restoration(image_np, refined_retry, retry_mask, label)
+        if clean2:
+            refined = refined_retry
+            feather_mask = retry_feather
+            inpaint_mask = retry_mask
+            logger.info(f"[restoration] '{label}': retry succeeded")
+        else:
+            # Fall back to pure LaMa
+            logger.warning(f"[restoration] '{label}': retry also failed — using pure LaMa")
+            refined = lama_result
+
+    # Blend into current canvas
+    final = _blend(current_canvas, refined, inpaint_mask, feather_mask)
+    _debug_save(f"final_{label}", final)
+
+    logger.info(f"[restoration] '{label}' done")
+    return final
+
+
+def _build_feather_float(mask: np.ndarray) -> np.ndarray:
+    """Build feather weight from an already-dilated binary mask."""
+    dist = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
+    weight = np.clip(dist / max(1.0, float(FEATHER_PX)), 0.0, 1.0)
+    k = max(3, FEATHER_PX // 2) | 1
+    weight = cv2.GaussianBlur(weight.astype(np.float32), (k, k), k / 3.0)
+    return np.clip(weight, 0.0, 1.0)
+
+
+# ── Public API ─────────────────────────────────────────────────────────────
+
+def restore_background(
+    image_np: np.ndarray,
+    per_object_data: List[Dict[str, Any]],
+    use_sdxl: bool = True,
+    seed: int = 42,
+) -> np.ndarray:
+    """
+    Restore the background behind all removed objects, processing each one
+    separately on its own crop.
+
+    Args:
+        image_np:         Original (H, W, 3) uint8 RGB.
+        per_object_data:  List of dicts, one per removed object:
+                            {
+                              "mask":  np.ndarray (H, W) uint8 SAM2 mask,
+                              "label": str object name,
+                            }
+        use_sdxl:         Run SDXL texture refinement after LaMa (default True).
+        seed:             Base random seed for SDXL.
+
+    Returns:
+        (H, W, 3) uint8 RGB — fully restored image.
+    """
+    if not per_object_data:
+        logger.info("[restoration] no objects to restore")
+        return image_np.copy()
+
+    orig_h, orig_w = image_np.shape[:2]
+    logger.info(
+        f"[restoration] {orig_w}×{orig_h} "
+        f"objects={[o['label'] for o in per_object_data]} "
+        f"use_sdxl={use_sdxl}"
+    )
+
+    # Process largest object first (most context for later objects)
+    ordered = sorted(
+        per_object_data,
+        key=lambda o: int(np.sum(o["mask"] > 0)),
+        reverse=True,
+    )
+
+    canvas = image_np.copy()
+    for i, obj in enumerate(ordered):
+        raw_mask = obj["mask"]
+        label    = obj.get("label", f"object_{i}")
+
+        # Validate mask shape
+        if raw_mask.shape[:2] != (orig_h, orig_w):
+            raw_mask = cv2.resize(raw_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+        canvas = _restore_one_object(
+            image_np=image_np,
+            current_canvas=canvas,
+            raw_mask=raw_mask,
+            label=label,
+            use_sdxl=use_sdxl,
+            seed=seed + i,
+        )
+
+    logger.info("[restoration] all objects restored")
+    return canvas
+
+
+# ── Backwards-compatible wrapper (used by on-demand endpoint) ──────────────
 
 def restore_background_from_mask_files(
     image_np: np.ndarray,
@@ -1015,15 +792,16 @@ def restore_background_from_mask_files(
     object_labels: Optional[List[str]] = None,
     force_generative: bool = False,
     steps: int = 30,
-    dilation_px: int = DEFAULT_DILATION_PX,
+    dilation_px: int = MIN_DILATION_PX,
 ) -> np.ndarray:
+    """Load per-object mask PNGs from disk and run restore_background."""
     from pathlib import Path
     from utils import config
 
-    refined_masks: List[np.ndarray] = []
     img_h, img_w = image_np.shape[:2]
+    per_object_data: List[Dict[str, Any]] = []
 
-    for mp in mask_paths:
+    for i, mp in enumerate(mask_paths):
         p = Path(mp)
         if not p.is_absolute():
             rel = str(mp).lstrip("/")
@@ -1036,20 +814,60 @@ def restore_background_from_mask_files(
         m = np.array(Image.open(p).convert("L"))
         if m.shape != (img_h, img_w):
             m = cv2.resize(m, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
-        refined_masks.append(m)
+        label = (object_labels[i] if object_labels and i < len(object_labels) else f"object_{i}")
+        per_object_data.append({"mask": m, "label": label})
 
-    if not refined_masks:
+    if not per_object_data:
         logger.warning("[restoration] no valid mask files — returning original")
         return image_np.copy()
 
-    union_mask = build_removal_mask(refined_masks, dilation_px=0)
-
     return restore_background(
         image_np=image_np,
-        union_mask=union_mask,
-        refined_masks=refined_masks,
-        object_labels=object_labels,
-        force_generative=force_generative,
-        steps=steps,
-        dilation_px=dilation_px,
+        per_object_data=per_object_data,
+        use_sdxl=force_generative,
     )
+
+
+# ── Keep build_removal_mask for external callers ───────────────────────────
+
+def build_removal_mask(
+    refined_masks: List[np.ndarray],
+    dilation_px: int = MIN_DILATION_PX,
+) -> np.ndarray:
+    """Combine per-object masks into one binary removal mask (simple union + dilation)."""
+    if not refined_masks:
+        return np.zeros((1, 1), dtype=np.uint8)
+    combined = np.zeros(refined_masks[0].shape[:2], dtype=np.uint8)
+    for m in refined_masks:
+        combined = np.maximum(combined, (m > 128).astype(np.uint8) * 255)
+    if dilation_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_px * 2 + 1, dilation_px * 2 + 1))
+        combined = cv2.dilate(combined, k, iterations=1)
+    return combined
+
+
+# ── Keep decontaminate_foreground_edges for segmentation_service ────────────
+
+def decontaminate_foreground_edges(
+    object_rgba: np.ndarray,
+    band_px: int = 3,
+) -> np.ndarray:
+    """Remove colour-bleed fringe from semi-transparent SAM2 object edges."""
+    result = object_rgba.copy()
+    alpha = object_rgba[:, :, 3].astype(np.float32)
+    opaque = (alpha > 200).astype(np.uint8)
+    if not np.any(opaque):
+        return result
+    for c in range(3):
+        channel = object_rgba[:, :, c].astype(np.float32)
+        filled = channel.copy()
+        filled[opaque == 0] = 0
+        weight = alpha.copy()
+        weight[opaque == 0] = 0
+        k = band_px * 4 + 1
+        filled_blur = cv2.GaussianBlur(filled, (k, k), band_px * 2)
+        weight_blur = cv2.GaussianBlur(weight, (k, k), band_px * 2)
+        pure_color = np.where(weight_blur > 1e-3, filled_blur / (weight_blur + 1e-6), channel)
+        edge_band = (alpha > 5) & (alpha < 200)
+        result[:, :, c] = np.where(edge_band, np.clip(pure_color, 0, 255), channel).astype(np.uint8)
+    return result

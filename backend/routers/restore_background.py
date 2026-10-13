@@ -1,24 +1,17 @@
 """
 Router: POST /restore-background
 
-On-demand background restoration for an existing session layer.
-
-Use this when the automatic restoration during segmentation needs to be
-re-run with stronger settings (more inference steps, forced generative mode)
-or when the user manually triggers a "Restore Background" action in the UI.
+On-demand background restoration for an existing session.
 
 Request body
 ────────────
 {
-  "session_id":    "abc123",          // session identifier
-  "image_path":    "/temp/abc123/original.jpg",  // original uploaded image
-  "mask_paths":    [                  // paths to per-object mask PNGs
-    "/temp/abc123/abc_0_shoe_mask.png",
-    "/temp/abc123/abc_1_logo_mask.png"
-  ],
-  "object_labels": ["shoe", "logo"], // names of the removed objects (optional)
-  "force_generative": false,          // set true to skip complexity check
-  "steps":         30                 // diffusion steps (default 30)
+  "session_id":    "abc123",
+  "image_path":    "/temp/abc123/original.jpg",
+  "mask_paths":    ["/temp/abc123/abc_0_shoe_mask.png", ...],
+  "object_labels": ["shoe", "logo"],   // optional, one per mask
+  "use_sdxl":      true,               // run SDXL texture refinement (default true)
+  "force_generative": false            // kept for backwards compat, alias for use_sdxl
 }
 
 Response body
@@ -34,7 +27,7 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -49,15 +42,13 @@ logger = logging.getLogger(__name__)
 TEMP_DIR = config.TEMP_DIR
 
 
-# ── Request / Response schemas ─────────────────────────────────────────────
-
 class RestoreBackgroundRequest(BaseModel):
     session_id: str
     image_path: str
     mask_paths: List[str]
     object_labels: Optional[List[str]] = None
-    force_generative: bool = False
-    steps: int = 30
+    use_sdxl: bool = True
+    force_generative: bool = False   # alias for use_sdxl (backwards compat)
 
 
 class RestoreBackgroundResponse(BaseModel):
@@ -66,23 +57,21 @@ class RestoreBackgroundResponse(BaseModel):
     session_id: str
 
 
-# ── Route ─────────────────────────────────────────────────────────────────
-
 @router.post("", response_model=RestoreBackgroundResponse)
 async def restore_background_endpoint(req: RestoreBackgroundRequest):
     """
     Re-run background restoration on an existing session.
 
-    Loads the original image and the per-object mask files, then runs the
-    full hybrid pipeline (Stage A → cv2, Stage B → SDXL/FLUX generative,
-    Stage C → seam blend) and saves the result as a new background PNG.
+    Loads the original image and per-object mask files, then runs the full
+    pipeline (LaMa Stage A → SDXL texture refinement → DINO validation →
+    feathered blend) per object separately.
 
     The existing object layers are not modified.
     """
+    use_sdxl = req.use_sdxl or req.force_generative
     logger.info(
         f"[restore-bg] session={req.session_id} "
-        f"masks={len(req.mask_paths)} "
-        f"force_gen={req.force_generative} steps={req.steps}"
+        f"masks={len(req.mask_paths)} use_sdxl={use_sdxl}"
     )
 
     # ── 1. Resolve original image ──────────────────────────────────────────
@@ -104,21 +93,47 @@ async def restore_background_endpoint(req: RestoreBackgroundRequest):
 
     img_h, img_w = image_np.shape[:2]
 
-    # ── 2. Run restoration ─────────────────────────────────────────────────
+    # ── 2. Load mask files and build per_object_data ───────────────────────
+    per_object_data: List[Dict[str, Any]] = []
+    for i, mp in enumerate(req.mask_paths):
+        mp_path = Path(mp)
+        if not mp_path.is_absolute():
+            rel = str(mp).lstrip("/")
+            if rel.startswith("temp/"):
+                rel = rel[len("temp/"):]
+            mp_path = (TEMP_DIR / rel).resolve()
+        if not mp_path.exists():
+            logger.warning(f"[restore-bg] mask not found: {mp_path} — skipping")
+            continue
+        try:
+            m = np.array(Image.open(mp_path).convert("L"))
+            if m.shape != (img_h, img_w):
+                m = cv2.resize(m, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+            label = (
+                req.object_labels[i]
+                if req.object_labels and i < len(req.object_labels)
+                else f"object_{i}"
+            )
+            per_object_data.append({"mask": m, "label": label})
+        except Exception as e:
+            logger.warning(f"[restore-bg] failed to load mask {mp_path}: {e}")
+
+    if not per_object_data:
+        raise HTTPException(status_code=422, detail="No valid mask files found")
+
+    # ── 3. Run restoration ─────────────────────────────────────────────────
     try:
-        from services.restoration_service import restore_background_from_mask_files
-        restored_np = restore_background_from_mask_files(
+        from services.restoration_service import restore_background
+        restored_np = restore_background(
             image_np=image_np,
-            mask_paths=req.mask_paths,
-            object_labels=req.object_labels,
-            force_generative=req.force_generative,
-            steps=req.steps,
+            per_object_data=per_object_data,
+            use_sdxl=use_sdxl,
         )
     except Exception as e:
         logger.exception(f"[restore-bg] restoration failed: {e}")
         raise HTTPException(status_code=500, detail=f"Restoration failed: {e}")
 
-    # ── 3. Save new background PNG ─────────────────────────────────────────
+    # ── 4. Save new background PNG ─────────────────────────────────────────
     session_dir = TEMP_DIR / req.session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,11 +142,11 @@ async def restore_background_endpoint(req: RestoreBackgroundRequest):
     png_file = session_dir / png_name
 
     rgba = cv2.cvtColor(restored_np, cv2.COLOR_RGB2RGBA)
-    rgba[:, :, 3] = 255  # fully opaque
+    rgba[:, :, 3] = 255
     Image.fromarray(rgba).save(str(png_file), optimize=False)
 
     png_url = f"/temp/{req.session_id}/{png_name}"
-    logger.info(f"[restore-bg] saved restored background → {png_url}")
+    logger.info(f"[restore-bg] saved → {png_url}")
 
     return RestoreBackgroundResponse(
         status="ok",

@@ -287,13 +287,6 @@ def _build_background_layer(
     # Build the union mask of all object-owned pixels
     union_mask = (ownership_map >= 0).astype(np.uint8) * 255
 
-    # Protection mask: pixels owned by other objects that we must not erase.
-    # Set to None here because union_mask already IS the full object union —
-    # there are no "other" objects to protect from the combined removal.
-    # If individual-object restoration is ever added, pass a per-object
-    # complement mask here.
-    protection_mask = None
-
     object_pixel_count = int(np.sum(union_mask > 0))
     logger.info(f"[segmentation] object pixels to restore: {object_pixel_count}")
 
@@ -302,19 +295,26 @@ def _build_background_layer(
         restored_np = image_np.copy()
     else:
         _labels = object_labels or []
+        _masks  = refined_masks or []
+
+        # Build per_object_data list: pair each mask with its label
+        per_object_data = [
+            {"mask": m, "label": _labels[i] if i < len(_labels) else f"object_{i}"}
+            for i, m in enumerate(_masks)
+        ]
+        # If no individual masks supplied, fall back to the combined union mask
+        if not per_object_data and np.any(union_mask > 0):
+            per_object_data = [{"mask": union_mask, "label": _labels[0] if _labels else "object"}]
+
         try:
             logger.info(
-                f"[segmentation] running background restoration for {len(_labels)} object(s): {_labels}"
+                f"[segmentation] running background restoration for "
+                f"{len(per_object_data)} object(s): {[o['label'] for o in per_object_data]}"
             )
             restored_np = restore_background(
                 image_np=image_np,
-                union_mask=union_mask,
-                object_labels=_labels,
-                refined_masks=refined_masks,
-                force_generative=False,
-                steps=20,
-                dilation_px=12,
-                protection_mask=protection_mask,
+                per_object_data=per_object_data,
+                use_sdxl=True,
             )
             logger.info("[segmentation] background restoration complete")
         except Exception as e:
