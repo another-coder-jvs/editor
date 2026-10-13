@@ -160,6 +160,69 @@ export function useCanvasDraw(
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    // ── Clone / Heal: composite overlay onto the SELECTED layer directly ──
+    // These tools edit existing content, not new content, so they must write
+    // back into whichever layer the user has active — not create a draw_ layer.
+    if (activeTool === 'clone' || activeTool === 'heal') {
+      const { selectedLayerIds, layers: currentLayers } = useEditorStore.getState()
+      const target = currentLayers.find(l => selectedLayerIds.includes(l.id) && !l.locked)
+      if (!target) {
+        // No valid selected layer — silently discard (no crash, no new layer)
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        return
+      }
+
+      // The selected layer may be a crop/smaller canvas; we composite it at its
+      // full-canvas position so the clone/heal strokes land in the right place.
+      const offscreen = document.createElement('canvas')
+      offscreen.width  = canvasWidth
+      offscreen.height = canvasHeight
+      const offCtx = offscreen.getContext('2d')!
+
+      // Draw existing layer pixels first
+      const layerUrl = target.png_path.startsWith('blob:') || target.png_path.startsWith('data:')
+        ? target.png_path
+        : `${API_BASE}${target.png_path}`
+      const img = await loadImageSafe(layerUrl)
+      if (img) {
+        offCtx.save()
+        offCtx.globalAlpha = 1
+        offCtx.drawImage(
+          img,
+          target.bbox.x + target.position.x,
+          target.bbox.y + target.position.y,
+          target.bbox.width,
+          target.bbox.height,
+        )
+        offCtx.restore()
+      }
+
+      // Composite the overlay (clone/heal strokes) on top
+      offCtx.drawImage(canvas, 0, 0)
+
+      // Crop back to the layer's own bbox so we don't expand it
+      const croppedCanvas = document.createElement('canvas')
+      croppedCanvas.width  = target.bbox.width
+      croppedCanvas.height = target.bbox.height
+      const croppedCtx = croppedCanvas.getContext('2d')!
+      croppedCtx.drawImage(
+        offscreen,
+        target.bbox.x + target.position.x,
+        target.bbox.y + target.position.y,
+        target.bbox.width,
+        target.bbox.height,
+        0, 0,
+        target.bbox.width,
+        target.bbox.height,
+      )
+
+      pushHistory()
+      updateLayer(target.id, { png_path: croppedCanvas.toDataURL('image/png') })
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      return
+    }
+
+    // ── All other draw tools: create / update a draw_ layer ───────────────
     const drawLayer = layers.find(l => l.id.startsWith('draw_') && isFullCanvasDrawLayer(l))
 
     if (!drawLayer) {
@@ -170,7 +233,7 @@ export function useCanvasDraw(
     }
 
     const offscreen = document.createElement('canvas')
-    offscreen.width = canvasWidth
+    offscreen.width  = canvasWidth
     offscreen.height = canvasHeight
     const offCtx = offscreen.getContext('2d')!
 
@@ -185,7 +248,7 @@ export function useCanvasDraw(
     pushHistory()
     updateLayer(drawLayer.id, { png_path: dataUrl })
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-  }, [layers, canvasWidth, canvasHeight, updateLayer, pushHistory, addLayer, isFullCanvasDrawLayer, createDrawLayerDefaults])
+  }, [activeTool, layers, canvasWidth, canvasHeight, updateLayer, pushHistory, addLayer, isFullCanvasDrawLayer, createDrawLayerDefaults])
 
   const drawBrushStroke = useCallback((
     ctx: CanvasRenderingContext2D,

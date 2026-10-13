@@ -18,3 +18,4 @@ echo "Pushed to $BRANCH!"
 
 
 # freebuff --continue 2026-08-21T05-17-59.679Z
+# kiro-cli --resume-id df451597-7629-4673-8147-476b93773604
