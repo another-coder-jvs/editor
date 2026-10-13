@@ -24,3 +24,6 @@ backend/.venv/
 *observations/
 
 # freebuff --continue 2026-10-02T03-53-43.993Z
+*.log
+*.db
+*.logs
