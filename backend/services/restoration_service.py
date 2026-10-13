@@ -72,8 +72,10 @@ MIN_CONTEXT_PAD_PX: int = 80          # minimum crop padding in pixels
 MASK_BLUR_SIGMA: float = 8.0          # Gaussian blur sigma for model mask
 POISSON_THRESHOLD: float = 0.12       # hole fraction above which Poisson is used
 
-SAME_PIXEL_DIST: float = 15.0
-SAME_PIXEL_FRAC: float = 0.60
+SAME_PIXEL_DIST: float = 10.0    # L2 threshold to call a pixel "same as original"
+SAME_PIXEL_FRAC: float = 0.80    # fraction of mask pixels that must differ for result to be accepted
+                                  # raised from 0.60 — false rejections occurred when background
+                                  # colour happened to match the original's surrounding area
 
 # Color-contamination detection thresholds
 COLOR_CONTAM_BAND_PX: int = 6         # pixels outside mask to inspect for bleed
@@ -298,31 +300,42 @@ def _needs_generative(
 
 def _stage_a(image_np: np.ndarray, removal_mask: np.ndarray) -> np.ndarray:
     """
-    Classical inpainting using cv2 TELEA + NS.
+    Classical inpainting using cv2 TELEA + NS on a padded crop.
 
-    Runs on a padded crop around the mask bounding box so the propagation
-    radius reaches actual surrounding background pixels even for large holes.
-    The result is pasted back at full resolution.
+    Critical fix: before running cv2.inpaint, we replace the hole pixels in
+    the crop with the median colour of the surrounding background.  cv2.inpaint
+    propagates from the hole *boundary* inward — if the hole still contains the
+    original object pixels, those colours contaminate the propagation and the
+    object can bleed back into the result.  Pre-zeroing forces propagation
+    from clean background only.
     """
-    logger.info("[restoration/A] cv2 TELEA + NS inpainting (padded crop)…")
+    logger.info("[restoration/A] cv2 TELEA + NS inpainting (padded crop, pre-zeroed hole)…")
 
-    h, w = image_np.shape[:2]
     crop_img, crop_mask, coords = _padded_crop(image_np, removal_mask)
     cy1, cx1, cy2, cx2 = coords
 
-    bgr_crop = cv2.cvtColor(crop_img, cv2.COLOR_RGB2BGR)
+    # ── Pre-zero the hole with median background colour ────────────────────
+    # Sample background pixels in the crop (outside the mask)
+    bg_pixels = crop_img[crop_mask == 0]
+    if len(bg_pixels) >= 10:
+        bg_median = np.median(bg_pixels, axis=0).astype(np.uint8)
+    else:
+        bg_median = np.array([128, 128, 128], dtype=np.uint8)
 
-    # Scale inpaint radius so it covers ~8% of the crop's shorter dimension
+    crop_prezeroed = crop_img.copy()
+    crop_prezeroed[crop_mask > 0] = bg_median  # replace object with flat bg colour
+
+    bgr_crop = cv2.cvtColor(crop_prezeroed, cv2.COLOR_RGB2BGR)
+
     crop_h, crop_w = crop_img.shape[:2]
     radius = max(8, int(min(crop_h, crop_w) * 0.08))
-    radius = min(radius, 32)  # cap at 32px
+    radius = min(radius, 32)
 
     result_bgr = cv2.inpaint(bgr_crop, crop_mask, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
     result_bgr = cv2.inpaint(result_bgr, crop_mask, inpaintRadius=max(4, radius // 2), flags=cv2.INPAINT_NS)
 
     result_crop = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
 
-    # Paste back — only within the removal mask region (protect original background)
     full_result = image_np.copy()
     full_result[cy1:cy2, cx1:cx2][crop_mask > 0] = result_crop[crop_mask > 0]
 
@@ -375,19 +388,55 @@ def _guard_original_pixels(
     result_np: np.ndarray,
     removal_mask: np.ndarray,
 ) -> bool:
+    """
+    Return True only when the inpaint model clearly reproduced the original
+    object pixels inside the mask (i.e. completely failed to inpaint).
+
+    Previous version: compared result to raw original pixels inside mask.
+    Problem: on a shoe ad with a red background, the shoe is also red — the
+    background reconstruction might be nearly identical to the non-shoe parts
+    of the original, triggering a false rejection and falling back to Stage A,
+    which then propagates the shoe back into the hole.
+
+    Fixed approach: compare the result pixels inside the mask to the
+    *object interior colour mean* (sampled deep inside the mask from the
+    original).  A valid background reconstruction will be far from the object
+    colour.  A failed reconstruction (object reproduced) will be close.
+
+    Only fires when the result is objectively identical to the original object
+    colour (same_frac > SAME_PIXEL_FRAC at a tighter L2 distance).
+    """
     mask_bool = removal_mask > 0
     if not np.any(mask_bool):
         return False
-    dists = np.linalg.norm(
-        original_np[mask_bool].astype(np.float32) - result_np[mask_bool].astype(np.float32),
-        axis=1,
-    )
-    same_frac = float(np.mean(dists < SAME_PIXEL_DIST))
-    if same_frac > SAME_PIXEL_FRAC:
+
+    # Estimate the object's interior colour from the original image.
+    # Erode the mask to get the core (avoids boundary background pixels).
+    binary = (removal_mask > 0).astype(np.uint8)
+    inner_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    inner = cv2.erode(binary, inner_k, iterations=1)
+    core_pixels = original_np[inner > 0] if np.any(inner > 0) else original_np[mask_bool]
+
+    if len(core_pixels) < 10:
+        return False  # not enough pixels to judge — don't reject
+
+    obj_mean = np.median(core_pixels, axis=0).astype(np.float32)
+
+    # How similar is the result (inside the mask) to the original object colour?
+    result_inside = result_np[mask_bool].astype(np.float32)
+    dists_to_obj  = np.linalg.norm(result_inside - obj_mean, axis=1)
+    same_as_obj_frac = float(np.mean(dists_to_obj < SAME_PIXEL_DIST))
+
+    if same_as_obj_frac > SAME_PIXEL_FRAC:
         logger.warning(
-            f"[restoration/B] {same_frac:.0%} masked pixels identical to original — rejecting"
+            f"[restoration/B] {same_as_obj_frac:.0%} of result pixels match object colour "
+            f"(obj_mean={obj_mean.astype(int).tolist()}) — model reproduced the object, rejecting"
         )
         return True
+
+    logger.debug(
+        f"[restoration/B] guard: {same_as_obj_frac:.0%} match object colour — accepted"
+    )
     return False
 
 
@@ -418,6 +467,7 @@ def _stage_b_local(
     prompt: str,
     steps: int,
     stage_a_result: np.ndarray,
+    object_labels: Optional[List[str]] = None,
 ) -> np.ndarray:
     """
     Local generative inpainting on a padded crop with a soft mask.
@@ -448,18 +498,26 @@ def _stage_b_local(
 
     logger.info(f"[restoration/B] SDXL on crop {cw}×{ch} (orig {orig_w}×{orig_h}) steps={steps}")
 
+    # Negative prompt: explicitly suppress the objects we removed
+    _labels = object_labels or []
+    objects_str = ", ".join(_labels) if _labels else "object"
+    negative_prompt = (
+        f"{objects_str}, product, shoe, sneaker, clothing, person, animal, "
+        f"watermark, text, logo, duplicate, artifact, blurry, low quality"
+    )
+
     try:
         pipe = model_manager.get_inpaint_pipe()
         gen  = torch.Generator(device="cpu").manual_seed(42)
         out = pipe(
             prompt=prompt,
+            negative_prompt=negative_prompt,
             image=image_pil,
             mask_image=mask_pil,
             height=ch,
             width=cw,
             num_inference_steps=steps,
-            guidance_scale=7.5,
-            strength=0.99,
+            guidance_scale=12.0,   # raised from 7.5 — forces stronger adherence to prompt
             generator=gen,
         ).images[0]
 
@@ -558,7 +616,10 @@ def _stage_b(
     prompt = _build_inpaint_prompt(image_np, object_labels, removal_mask)
     if remote_cfg.COMPUTE_MODE == "remote":
         return _stage_b_remote(image_np, removal_mask, prompt, steps, stage_a_result)
-    return _stage_b_local(image_np, removal_mask, prompt, steps, stage_a_result)
+    return _stage_b_local(
+        image_np, removal_mask, prompt, steps, stage_a_result,
+        object_labels=object_labels,
+    )
 
 
 # ---------------------------------------------------------------------------

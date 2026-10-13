@@ -35,6 +35,74 @@ WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE  = torch.float16 if DEVICE == "cuda" else torch.float32
 
+# ── GPU memory-aware placement ─────────────────────────────────────────────
+# Threshold: if less than this many bytes are free on the GPU, fall back to
+# model_cpu_offload instead of placing the full model on GPU.
+# SDXL inpaint/img2img ~6 GB in fp16.  With 15 GB total and SAM2/DINO already
+# loaded (~1 GB combined) we typically have ~9 GB free → use full GPU.
+_FULL_GPU_FREE_THRESHOLD_BYTES = 5 * 1024 ** 3  # 5 GB
+
+
+def _free_vram_bytes() -> int:
+    """Return free VRAM in bytes.  Returns 0 if not on CUDA or on error."""
+    if DEVICE != "cuda":
+        return 0
+    try:
+        free, _ = torch.cuda.mem_get_info()
+        return int(free)
+    except Exception:
+        return 0
+
+
+def _place_pipe_on_device(pipe, model_name: str, force_offload: bool = False) -> None:
+    """
+    Place a diffusers pipeline on the GPU using the best available strategy.
+
+    Strategy (chosen at runtime based on current free VRAM):
+    ─────────────────────────────────────────────────────────
+    Full-GPU  (free VRAM ≥ threshold AND not force_offload):
+        pipe.to(DEVICE)                     — all weights resident on GPU
+        pipe.enable_attention_slicing()     — cuts activation memory ~50%
+        pipe.enable_vae_slicing()           — reduces VAE peak memory
+        Result: maximum throughput, ~100% GPU utilisation during inference.
+
+    Offload (free VRAM < threshold OR force_offload=True):
+        pipe.enable_model_cpu_offload()     — keep only one submodule on GPU
+        Result: lower peak VRAM but CPU↔GPU transfers cause GPU idle gaps.
+
+    The function is intentionally side-effect only (modifies pipe in place).
+    """
+    if DEVICE != "cuda":
+        pipe.to("cpu")
+        logger.info(f"[model_manager] {model_name}: placed on CPU (no CUDA)")
+        return
+
+    free = _free_vram_bytes()
+    free_gb = free / 1024 ** 3
+
+    if not force_offload and free >= _FULL_GPU_FREE_THRESHOLD_BYTES:
+        logger.info(
+            f"[model_manager] {model_name}: full GPU placement "
+            f"(free VRAM {free_gb:.1f} GB ≥ threshold {_FULL_GPU_FREE_THRESHOLD_BYTES // 1024**3} GB)"
+        )
+        pipe.to(DEVICE)
+        try:
+            pipe.enable_attention_slicing()
+            logger.info(f"[model_manager] {model_name}: attention slicing enabled")
+        except Exception as e:
+            logger.debug(f"[model_manager] {model_name}: attention slicing unavailable ({e})")
+        try:
+            pipe.enable_vae_slicing()
+            logger.info(f"[model_manager] {model_name}: VAE slicing enabled")
+        except Exception as e:
+            logger.debug(f"[model_manager] {model_name}: VAE slicing unavailable ({e})")
+    else:
+        logger.info(
+            f"[model_manager] {model_name}: cpu_offload "
+            f"(free VRAM {free_gb:.1f} GB < threshold or force_offload={force_offload})"
+        )
+        pipe.enable_model_cpu_offload()
+
 # Idle timeout: unload all models after this many seconds of no activity
 IDLE_SECONDS = int(os.environ.get("MODEL_IDLE_SECONDS", "120"))  # default 2 min
 
@@ -223,16 +291,8 @@ class ModelManager:
             torch_dtype=torch.bfloat16 if DEVICE == "cuda" else torch.float32,
             cache_dir=str(WEIGHTS_DIR / "flux_fill"),
         )
-        if DEVICE == "cuda":
-            pipe.to(DEVICE)
-            # Enable memory optimizations for FLUX (large model ~12B params)
-            try:
-                pipe.enable_model_cpu_offload()
-                logger.info("[model_manager] FLUX.1 Fill: model_cpu_offload enabled")
-            except Exception:
-                logger.info("[model_manager] FLUX.1 Fill: using full GPU")
-        else:
-            pipe.to("cpu")
+        # FLUX.1 Fill is ~24 GB in bfloat16 — always offload regardless of VRAM
+        _place_pipe_on_device(pipe, "FLUX.1-Fill", force_offload=(DEVICE == "cuda"))
         logger.info("[model_manager] FLUX.1 Fill loaded")
         return pipe
 
@@ -405,10 +465,7 @@ class ModelManager:
             low_cpu_mem_usage=True,
             cache_dir=str(WEIGHTS_DIR / "sdxl_img2img"),
         )
-        if DEVICE == "cuda":
-            pipe.enable_model_cpu_offload()
-        else:
-            pipe.to("cpu")
+        _place_pipe_on_device(pipe, "SDXL-img2img")
         logger.info("[model_manager] SDXL img2img loaded")
         return pipe
     # ── Inpainting ────────────────────────────────────────────────────────────
@@ -429,10 +486,7 @@ class ModelManager:
             low_cpu_mem_usage=True,
             cache_dir=str(WEIGHTS_DIR / "sdxl_inpaint"),
         )
-        if DEVICE == "cuda":
-            pipe.enable_model_cpu_offload()
-        else:
-            pipe.to("cpu")
+        _place_pipe_on_device(pipe, "SDXL-inpaint")
         logger.info("[model_manager] SDXL inpaint loaded")
         return pipe
 
