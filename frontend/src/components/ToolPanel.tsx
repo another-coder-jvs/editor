@@ -181,7 +181,13 @@ const ToolOptions: React.FC = () => {
       <p className="text-xs text-gray-600 mb-2">Drag to crop · Enter to apply · Esc to cancel</p>
       <div className="flex flex-wrap gap-1">
         {['Free', '1:1', '4:3', '16:9', '3:2'].map(r => (
-          <button key={r} className="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-2 py-0.5 rounded">{r}</button>
+          <button
+            key={r}
+            className="text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-2 py-0.5 rounded"
+            onClick={() => window.dispatchEvent(new CustomEvent('crop-set-ratio', { detail: r }))}
+          >
+            {r}
+          </button>
         ))}
       </div>
     </div>

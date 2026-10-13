@@ -220,7 +220,7 @@ export const Canvas: React.FC = () => {
 
   // Activate drawing hooks
   useCanvasDraw(overlayRef, canvasWidth, canvasHeight, canvasScale, guideRef)
-  const { cropRect, applyCrop } = useCanvasCrop(cropRef, canvasWidth, canvasHeight, canvasScale)
+  const { cropRect, applyCrop, setAspectRatio } = useCanvasCrop(cropRef, canvasWidth, canvasHeight, canvasScale)
   const { selection } = useCanvasSelect(selectionRef, canvasWidth, canvasHeight, canvasScale, () => {})
 
   // AI Detection state
@@ -486,6 +486,41 @@ export const Canvas: React.FC = () => {
           if (activeTool === 'object_select') {
             e.stopPropagation()
             handleObjectSelectClick(e)
+            return
+          }
+
+          // FIX M3: text_add — create an editable text layer at the click position
+          if (activeTool === 'text_add') {
+            e.stopPropagation()
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+            const cx = (e.clientX - rect.left) / canvasScale
+            const cy = (e.clientY - rect.top) / canvasScale
+            const textW = 200, textH = 48
+            const newId = `text_${Date.now()}`
+            addLayer({
+              id: newId,
+              name: 'text:New Text',
+              mask_path: '',
+              png_path: '',
+              bbox: { x: Math.max(0, cx - textW / 2), y: Math.max(0, cy - textH / 2), width: textW, height: textH },
+              z_index: (layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0) + 1,
+              visible: true,
+              opacity: 1,
+              position: { x: 0, y: 0 },
+              scale: { x: 1, y: 1 },
+              rotation: 0,
+              history: ['text'],
+              locked: false,
+              blend_mode: 'normal',
+              adjustments: {
+                brightness: 100, contrast: 100, saturation: 100, exposure: 0,
+                highlights: 0, shadows: 0, temperature: 0, tint: 0, hue: 0,
+                sharpness: 100, clarity: 0, fade: 0, vignette: 0, grain: 0,
+              },
+            })
+            // Switch to move tool so the user can immediately drag/edit
+            useEditorStore.getState().setActiveTool('move')
+            useEditorStore.getState().selectLayer(newId)
             return
           }
         }}

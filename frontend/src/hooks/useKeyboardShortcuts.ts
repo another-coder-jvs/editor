@@ -28,7 +28,7 @@ export function useKeyboardShortcuts() {
       const ARROW_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']
       if (ARROW_KEYS.includes(e.key) && selectedLayerIds.length > 0) {
         e.preventDefault()
-        const step = e.shiftKey ? 100 : 5
+        const step = e.shiftKey ? 10 : 1
         selectedLayerIds.forEach(id => {
           const layer = layers.find(l => l.id === id)
           if (!layer) return
@@ -57,6 +57,7 @@ export function useKeyboardShortcuts() {
         case 'l': setActiveTool('lasso_select'); break
         case 'w': setActiveTool('magic_select'); break
         case 's': if (!ctrl) setActiveTool('clone'); break
+        case 'j': setActiveTool('heal'); break
         case 'i': setActiveTool('color_picker'); break
         case 'p': setActiveTool('pencil'); break
         case 'u': setActiveTool('shape_rect'); break

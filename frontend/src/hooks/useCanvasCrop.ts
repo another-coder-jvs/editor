@@ -105,12 +105,14 @@ export function useCanvasCrop(
     const pos = getPos(e)
 
     if (drawing.current && drawStart.current) {
+      // FIX M2a: clamp to image bounds
       const rect: CropRect = {
-        x: Math.min(drawStart.current.x, pos.x),
-        y: Math.min(drawStart.current.y, pos.y),
-        w: Math.abs(pos.x - drawStart.current.x),
-        h: Math.abs(pos.y - drawStart.current.y),
+        x: Math.max(0, Math.min(canvasWidth,  Math.min(drawStart.current.x, pos.x))),
+        y: Math.max(0, Math.min(canvasHeight, Math.min(drawStart.current.y, pos.y))),
+        w: 0, h: 0,
       }
+      rect.w = Math.max(0, Math.min(canvasWidth  - rect.x, Math.abs(pos.x - drawStart.current.x)))
+      rect.h = Math.max(0, Math.min(canvasHeight - rect.y, Math.abs(pos.y - drawStart.current.y)))
       setCropRect(rect)
       drawCrop(rect)
       return
@@ -119,7 +121,7 @@ export function useCanvasCrop(
     if (dragging.current && dragStart.current) {
       const dx = pos.x - dragStart.current.mx
       const dy = pos.y - dragStart.current.my
-      const r = { ...dragStart.current.rect }
+      let r = { ...dragStart.current.rect }
       if (dragging.current === 'move') {
         r.x += dx; r.y += dy
       } else if (dragging.current === 'tl') {
@@ -131,12 +133,17 @@ export function useCanvasCrop(
       } else if (dragging.current === 'br') {
         r.w += dx; r.h += dy
       }
+      // FIX M2a: clamp after handle drag too
+      r.x = Math.max(0, Math.min(canvasWidth,  r.x))
+      r.y = Math.max(0, Math.min(canvasHeight, r.y))
+      r.w = Math.max(5, Math.min(canvasWidth  - r.x, r.w))
+      r.h = Math.max(5, Math.min(canvasHeight - r.y, r.h))
       if (r.w > 5 && r.h > 5) {
         setCropRect(r)
         drawCrop(r)
       }
     }
-  }, [getPos, drawCrop])
+  }, [getPos, drawCrop, canvasWidth, canvasHeight])
 
   const onMouseUp = useCallback(() => {
     drawing.current = false
@@ -144,20 +151,23 @@ export function useCanvasCrop(
     dragStart.current = null
   }, [])
 
-  // Apply crop on Enter — composites all visible layers, creates a new layer
+  // Apply crop on Enter
   const applyCrop = useCallback(async () => {
     if (!cropRect || cropRect.w < 2 || cropRect.h < 2) return
 
-    const { layers, addLayer, pushHistory } = useEditorStore.getState()
+    const { layers, addLayer, pushHistory, setSession, sessionId, originalImagePath, originalImageUrl } = useEditorStore.getState()
+
+    const cropW = Math.round(cropRect.w)
+    const cropH = Math.round(cropRect.h)
+    const cropX = Math.round(cropRect.x)
+    const cropY = Math.round(cropRect.y)
 
     const offscreen = document.createElement('canvas')
-    offscreen.width = Math.round(cropRect.w)
-    offscreen.height = Math.round(cropRect.h)
+    offscreen.width  = cropW
+    offscreen.height = cropH
     const ctx = offscreen.getContext('2d')!
 
-    // Composite all visible layers sorted by z_index
     const visible = [...layers].filter(l => l.visible && l.png_path).sort((a, b) => a.z_index - b.z_index)
-
     for (const layer of visible) {
       const src = layer.png_path.startsWith('blob:') || layer.png_path.startsWith('data:')
         ? layer.png_path : `${API_BASE}${layer.png_path}`
@@ -173,13 +183,14 @@ export function useCanvasCrop(
       await new Promise<void>(resolve => {
         const img = new Image()
         img.onload = () => {
-          const px = layer.bbox.x + layer.position.x
-          const py = layer.bbox.y + layer.position.y
           ctx.save()
           ctx.globalAlpha = layer.opacity
           ctx.globalCompositeOperation = (layer.blend_mode || 'normal') as GlobalCompositeOperation
-          // Translate so crop origin = (0,0)
-          ctx.drawImage(img, px - cropRect.x, py - cropRect.y, layer.bbox.width, layer.bbox.height)
+          ctx.drawImage(img,
+            layer.bbox.x + layer.position.x - cropX,
+            layer.bbox.y + layer.position.y - cropY,
+            layer.bbox.width, layer.bbox.height,
+          )
           ctx.restore()
           resolve()
         }
@@ -189,13 +200,24 @@ export function useCanvasCrop(
     }
 
     pushHistory()
+    const dataUrl = offscreen.toDataURL('image/png')
+
+    // FIX M2b: update the store's canvas dimensions so the viewport matches the crop
+    setSession(
+      sessionId || '',
+      originalImagePath || '',
+      originalImageUrl || '',
+      cropW,
+      cropH,
+    )
+
     const maxZ = layers.length > 0 ? Math.max(...layers.map(l => l.z_index)) : 0
     addLayer({
       id: `crop_${Date.now()}`,
       name: 'Crop',
       mask_path: '',
-      png_path: offscreen.toDataURL('image/png'),
-      bbox: { x: Math.round(cropRect.x), y: Math.round(cropRect.y), width: Math.round(cropRect.w), height: Math.round(cropRect.h) },
+      png_path: dataUrl,
+      bbox: { x: 0, y: 0, width: cropW, height: cropH },
       z_index: maxZ + 1,
       visible: true,
       opacity: 1,
@@ -250,5 +272,45 @@ export function useCanvasCrop(
     }
   }, [activeTool, canvasWidth, canvasHeight, cropRef])
 
-  return { cropRect, applyCrop }
+  // FIX M2c: aspect-ratio preset handler — called from ToolOptionsPanel buttons
+  const setAspectRatio = useCallback((ratio: string) => {
+    if (!cropRect) {
+      // No crop box yet — create one in the center of the canvas
+      const cw = canvasWidth, ch = canvasHeight
+      const defaultSize = Math.min(cw, ch) * 0.6
+      let w = defaultSize, h = defaultSize
+      if (ratio !== 'Free') {
+        const [rw, rh] = ratio.split(':').map(Number)
+        if (rw && rh) {
+          w = defaultSize
+          h = defaultSize * rh / rw
+          if (h > ch * 0.9) { h = ch * 0.9; w = h * rw / rh }
+        }
+      }
+      const r: CropRect = { x: (cw - w) / 2, y: (ch - h) / 2, w, h }
+      setCropRect(r)
+      drawCrop(r)
+      return
+    }
+    if (ratio === 'Free') return
+    const [rw, rh] = ratio.split(':').map(Number)
+    if (!rw || !rh) return
+    // Adjust height to match ratio, keep top-left corner
+    const newH = cropRect.w * rh / rw
+    const r: CropRect = { ...cropRect, h: Math.min(newH, canvasHeight - cropRect.y) }
+    setCropRect(r)
+    drawCrop(r)
+  }, [cropRect, canvasWidth, canvasHeight, drawCrop])
+
+  // Listen for aspect-ratio preset events dispatched by ToolOptionsPanel buttons
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (activeTool !== 'crop') return
+      setAspectRatio((e as CustomEvent).detail as string)
+    }
+    window.addEventListener('crop-set-ratio', handler)
+    return () => window.removeEventListener('crop-set-ratio', handler)
+  }, [activeTool, setAspectRatio])
+
+  return { cropRect, applyCrop, setAspectRatio }
 }

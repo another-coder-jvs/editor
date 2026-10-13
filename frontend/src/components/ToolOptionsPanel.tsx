@@ -120,8 +120,13 @@ export const ToolOptionsPanel: React.FC = () => {
         <div className="text-xs font-semibold text-gray-300 mb-2">Crop</div>
         <p className="text-xs text-gray-500">Drag on canvas to set crop area.<br />Enter to apply · Esc to cancel.</p>
         <div className="mt-3 space-y-1">
+          {/* FIX M2c: preset buttons now dispatch an event that useCanvasCrop listens to */}
           {['Free', '1:1', '4:3', '16:9', '3:2', '9:16'].map(label => (
-            <button key={label} className="w-full text-left text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-2 py-1 rounded">
+            <button
+              key={label}
+              className="w-full text-left text-xs bg-dark-600 hover:bg-dark-500 text-gray-300 px-2 py-1 rounded"
+              onClick={() => window.dispatchEvent(new CustomEvent('crop-set-ratio', { detail: label }))}
+            >
               {label}
             </button>
           ))}
