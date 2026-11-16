@@ -12,6 +12,8 @@ export default defineConfig({
     port: 5173,
     host: "127.0.0.1",
     strictPort:true,
+    allowedHosts: true,
+
     proxy: {
       '/detect': baseUrl || 'http://localhost:8000',
       '/segment': baseUrl || 'http://localhost:8000',
