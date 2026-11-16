@@ -121,6 +121,32 @@ def mask_to_fullcanvas_png(
 # Bbox fallback mask
 # ---------------------------------------------------------------------------
 
+def crop_layer_to_content(rgba: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+    """
+    Crop a full-canvas RGBA layer down to its non-transparent pixels.
+
+    Returns (cropped_rgba, bbox) where bbox is the content box in canvas
+    coordinates. Layer PNGs are stored tightly cropped so their clickable area
+    matches the object instead of covering — and blocking — every layer below.
+
+    If the layer has no visible pixels, the input is returned unchanged with a
+    zero-sized bbox so the caller can skip it.
+    """
+    alpha = rgba[:, :, 3]
+    cols = np.flatnonzero(alpha.max(axis=0) > 0)
+    rows = np.flatnonzero(alpha.max(axis=1) > 0)
+    if cols.size == 0 or rows.size == 0:
+        return rgba, {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}
+    x1, x2 = int(cols[0]), int(cols[-1]) + 1
+    y1, y2 = int(rows[0]), int(rows[-1]) + 1
+    return rgba[y1:y2, x1:x2], {
+        "x": float(x1),
+        "y": float(y1),
+        "width": float(x2 - x1),
+        "height": float(y2 - y1),
+    }
+
+
 def _bbox_mask(shape: Tuple[int, int], bbox: Dict[str, float]) -> np.ndarray:
     mask = np.zeros(shape, dtype=bool)
     x1 = max(0, int(bbox["x"]))
@@ -194,7 +220,6 @@ def _segment_objects_remote(
 
     # --- Pass 2: assign pixel ownership small → large ---
     layers: List[LayerData] = []
-    full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
 
     for orig_idx, obj in sorted_objects:
         label  = obj["label"]
@@ -220,23 +245,25 @@ def _segment_objects_remote(
         png_file   = session_dir / png_name
 
         Image.fromarray(owned_mask).save(str(mask_file))
-        mask_to_fullcanvas_png(image_np, owned_mask, png_file)
 
-        # Decontaminate foreground edges (colour bleed removal)
+        # Build the layer in memory, decontaminate edges, then crop it to the
+        # object's own content box instead of keeping a full-canvas PNG.
+        rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
+        rgba[:, :, 3] = owned_mask
         try:
             from services.restoration_service import decontaminate_foreground_edges
-            rgba_arr   = np.array(Image.open(png_file).convert("RGBA"))
-            rgba_clean = decontaminate_foreground_edges(rgba_arr, band_px=3)
-            Image.fromarray(rgba_clean).save(str(png_file), optimize=False)
+            rgba = decontaminate_foreground_edges(rgba, band_px=3)
         except Exception as _de:
             logger.debug(f"[segmentation/remote] foreground decontamination skipped: {_de}")
+        rgba, content_bbox = crop_layer_to_content(rgba)
+        Image.fromarray(rgba).save(str(png_file), optimize=False)
 
         layers.append(LayerData(
             id=layer_id,
             name=label,
             mask_path=f"/temp/{session_id}/{mask_name}",
             png_path=f"/temp/{session_id}/{png_name}",
-            bbox=BoundingBox(**full_bbox),
+            bbox=BoundingBox(**content_bbox),
             z_index=len(objects) - orig_idx,
             visible=True,
             opacity=1.0,
@@ -481,7 +508,6 @@ def segment_objects(
 
     # ── Pass 2: assign pixel ownership and write full-canvas layers ────────
     layers: List[LayerData] = []
-    full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
 
     for orig_idx, obj in sorted_objects:
         label   = obj["label"]
@@ -510,16 +536,18 @@ def segment_objects(
         png_file   = session_dir / png_name
 
         Image.fromarray(owned_mask).save(str(mask_file))
-        mask_to_fullcanvas_png(image_np, owned_mask, png_file)
 
-        # Decontaminate foreground edges (colour bleed removal)
+        # Build the layer in memory, decontaminate edges, then crop it to the
+        # object's own content box instead of keeping a full-canvas PNG.
+        rgba = cv2.cvtColor(image_np, cv2.COLOR_RGB2RGBA)
+        rgba[:, :, 3] = owned_mask
         try:
             from services.restoration_service import decontaminate_foreground_edges
-            rgba_arr   = np.array(Image.open(png_file).convert("RGBA"))
-            rgba_clean = decontaminate_foreground_edges(rgba_arr, band_px=3)
-            Image.fromarray(rgba_clean).save(str(png_file), optimize=False)
+            rgba = decontaminate_foreground_edges(rgba, band_px=3)
         except Exception as _de:
             logger.debug(f"[segmentation] foreground decontamination skipped: {_de}")
+        rgba, content_bbox = crop_layer_to_content(rgba)
+        Image.fromarray(rgba).save(str(png_file), optimize=False)
 
         # Determine a sensible layer_type from the label
         lbl_lower = label.lower()
@@ -535,7 +563,7 @@ def segment_objects(
             name=label,
             mask_path=f"/temp/{session_id}/{mask_name}",
             png_path=f"/temp/{session_id}/{png_name}",
-            bbox=BoundingBox(**full_bbox),
+            bbox=BoundingBox(**content_bbox),
             z_index=len(objects) - orig_idx,
             visible=True,
             opacity=1.0,

@@ -1,9 +1,11 @@
 """Router: POST /edit"""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
+from PIL import Image
 from schemas import EditRequest, EditResponse
 from services.editing_service import edit_layer
 from services.progress_store import set_progress
@@ -44,6 +46,21 @@ async def edit(req: EditRequest):
         logger.error(f"[edit] original image not found: {image_path}")
         raise HTTPException(status_code=404, detail="Original image not found")
 
+    # Layer bbox from session meta — used to crop results that come back in
+    # full-canvas coordinates (e.g. text_edit) down to the layer's tight box.
+    meta_file = session_dir / "session_meta.json"
+    meta = None
+    layer_bbox = None
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text())
+            for layer in meta.get("layers", []):
+                if layer.get("id") == req.layer_id:
+                    layer_bbox = layer.get("bbox")
+                    break
+        except Exception as e:
+            logger.warning(f"[edit] failed to read session_meta: {e}")
+
     set_progress(req.session_id, "edit", 0.1, f"Editing layer {req.layer_id}…")
     try:
         edited_path = edit_layer(
@@ -63,6 +80,24 @@ async def edit(req: EditRequest):
     except Exception as e:
         logger.exception(f"[edit] edit_layer failed: {e}")
         raise
+    # Layer PNGs are cropped to their content bbox. If a handler returned a
+    # full-canvas image, crop it back so it still lines up with the layer.
+    if layer_bbox:
+        try:
+            edited = Image.open(edited_path)
+            base = Image.open(layer_png)
+            if edited.size != base.size:
+                bx = max(0, int(round(layer_bbox["x"])))
+                by = max(0, int(round(layer_bbox["y"])))
+                bw = int(round(layer_bbox["width"]))
+                bh = int(round(layer_bbox["height"]))
+                edited.crop(
+                    (bx, by, min(edited.width, bx + bw), min(edited.height, by + bh))
+                ).save(edited_path)
+                logger.info(f"[edit] cropped full-canvas result to layer bbox ({bw}x{bh})")
+        except Exception as e:
+            logger.warning(f"[edit] could not crop oversized edit result: {e}")
+
     logger.info(f"[edit] done → {edited_path}")
     set_progress(req.session_id, "edit", 1.0, "Edit complete", done=True)
     try:
@@ -72,11 +107,8 @@ async def edit(req: EditRequest):
     edited_path = "/temp/" + str(rel).replace("\\", "/")
 
     # Persist updated png_path to session_meta.json so refresh restores the edit
-    import json
-    meta_file = session_dir / "session_meta.json"
-    if meta_file.exists():
+    if meta is not None:
         try:
-            meta = json.loads(meta_file.read_text())
             for layer in meta.get("layers", []):
                 if layer.get("id") == req.layer_id:
                     layer["png_path"] = edited_path

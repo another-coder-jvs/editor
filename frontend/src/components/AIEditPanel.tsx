@@ -376,6 +376,7 @@ export const AIEditPanel: React.FC = () => {
       // reconstructed background so no duplicate layer is created.
       updateLayer(selectedLayer.id, {
         png_path: result.path,
+        bbox: result.bbox,
         history: [...selectedLayer.history, 'reconstructed background'],
       })
       toast.success(`Background reconstructed behind "${selectedLayer.name}"`)

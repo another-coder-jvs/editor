@@ -195,7 +195,7 @@ export async function reconstructBackground(payload: {
   layer_id: string
   image_path: string
   mask_path: string
-}): Promise<{ path: string; layer_id: string }> {
+}): Promise<{ path: string; layer_id: string; bbox: { x: number; y: number; width: number; height: number } }> {
   const { data } = await api.post('/inpaint-bg', payload)
   return data
 }

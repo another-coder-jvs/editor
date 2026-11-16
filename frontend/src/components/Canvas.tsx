@@ -37,6 +37,54 @@ function buildOverlayStyle(adj: LayerAdjustments, w: number, h: number) {
   return styles
 }
 
+// ── Alpha hit-testing ────────────────────────────────────────────────────
+// Layer PNGs are tightly cropped to their content, but their rectangles can
+// still overlap. Sampling the layer's own alpha means a click on a transparent
+// pixel falls through to the layer underneath instead of selecting empty area.
+const hitCanvasCache = new Map<string, HTMLCanvasElement>()
+const hitCanvasLoading = new Set<string>()
+
+function preloadHitCanvas(pngPath: string): void {
+  if (!pngPath || hitCanvasCache.has(pngPath) || hitCanvasLoading.has(pngPath)) return
+  hitCanvasLoading.add(pngPath)
+  const img = new Image()
+  img.crossOrigin = 'anonymous'
+  img.onload = () => {
+    const c = document.createElement('canvas')
+    c.width = img.naturalWidth
+    c.height = img.naturalHeight
+    c.getContext('2d')?.drawImage(img, 0, 0)
+    hitCanvasCache.set(pngPath, c)
+    hitCanvasLoading.delete(pngPath)
+  }
+  img.onerror = () => { hitCanvasLoading.delete(pngPath) }
+  img.src = pngPath.startsWith('blob:') || pngPath.startsWith('data:')
+    ? pngPath : `${API_BASE}${pngPath}`
+}
+
+/** Alpha (0-255) of a layer at a canvas-space point, honouring rotation/scale. */
+function layerAlphaAt(layer: any, cx: number, cy: number): number {
+  const hit = hitCanvasCache.get(layer.png_path)
+  if (!hit || !hit.width || !hit.height) return 255  // not loaded → assume opaque
+  const w = layer.bbox.width, h = layer.bbox.height
+  if (!w || !h) return 0
+  const centerX = layer.bbox.x + layer.position.x + w / 2
+  const centerY = layer.bbox.y + layer.position.y + h / 2
+  const rot = -((layer.rotation || 0) * Math.PI) / 180
+  const dx = cx - centerX, dy = cy - centerY
+  const rx = dx * Math.cos(rot) - dy * Math.sin(rot)
+  const ry = dx * Math.sin(rot) + dy * Math.cos(rot)
+  const sx = layer.scale?.x || 1, sy = layer.scale?.y || 1
+  const lx = rx / sx + w / 2
+  const ly = ry / sy + h / 2
+  if (lx < 0 || ly < 0 || lx >= w || ly >= h) return 0
+  const px = Math.min(hit.width - 1, Math.floor((lx / w) * hit.width))
+  const py = Math.min(hit.height - 1, Math.floor((ly / h) * hit.height))
+  const ctx = hit.getContext('2d')
+  if (!ctx) return 255
+  return ctx.getImageData(px, py, 1, 1).data[3]
+}
+
 interface LayerImageProps {
   layer: any
   rawUrl: string | null
@@ -52,7 +100,7 @@ const LayerImage: React.FC<LayerImageProps> = ({
   layer, rawUrl, isSelected, selectLayer, updateLayer, canvasScale, pushHistory, activeTool,
 }) => {
   const thumbUrl = useBlobUrl(rawUrl)
-  const dragStart = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
+  const dragStart = useRef<{ layerId: string; mx: number; my: number; px: number; py: number } | null>(null)
   const didPushHistory = useRef(false)
   const [inlineEditing, setInlineEditing] = useState(false)
   const editRef = useRef<HTMLDivElement>(null)
@@ -70,9 +118,34 @@ const LayerImage: React.FC<LayerImageProps> = ({
     if (inlineEditing) return
     if (!canDrag || e.button !== 0) return
     e.stopPropagation()
-    selectLayer(layer.id, e.ctrlKey || e.metaKey)
-    dragStart.current = { mx: e.clientX, my: e.clientY, px: layer.position.x, py: layer.position.y }
     e.preventDefault()
+
+    // Select/drag the topmost layer whose pixel under the cursor is actually
+    // opaque, so transparent parts of a bbox no longer block lower layers.
+    const canvasEl = e.currentTarget.parentElement as HTMLElement | null
+    if (canvasEl) {
+      const rect = canvasEl.getBoundingClientRect()
+      const cx = (e.clientX - rect.left) / canvasScale
+      const cy = (e.clientY - rect.top) / canvasScale
+      const candidates = useEditorStore.getState().layers
+        .filter(l => l.visible && l.png_path)
+        .sort((a, b) => b.z_index - a.z_index)
+      const target = candidates.find(l => layerAlphaAt(l, cx, cy) > 8)
+      if (!target) {
+        useEditorStore.getState().clearSelection()
+        return
+      }
+      selectLayer(target.id, e.ctrlKey || e.metaKey)
+      dragStart.current = {
+        layerId: target.id,
+        mx: e.clientX, my: e.clientY,
+        px: target.position.x, py: target.position.y,
+      }
+      return
+    }
+
+    selectLayer(layer.id, e.ctrlKey || e.metaKey)
+    dragStart.current = { layerId: layer.id, mx: e.clientX, my: e.clientY, px: layer.position.x, py: layer.position.y }
   }
 
   const onDoubleClick = (e: React.MouseEvent) => {
@@ -102,15 +175,16 @@ const LayerImage: React.FC<LayerImageProps> = ({
   }
 
   const onMouseMove = useCallback((e: MouseEvent) => {
-    if (!dragStart.current) return
-    const dx = (e.clientX - dragStart.current.mx) / canvasScale
-    const dy = (e.clientY - dragStart.current.my) / canvasScale
+    const drag = dragStart.current
+    if (!drag) return
+    const dx = (e.clientX - drag.mx) / canvasScale
+    const dy = (e.clientY - drag.my) / canvasScale
     if (!didPushHistory.current && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
       pushHistory()
       didPushHistory.current = true
     }
-    updateLayer(layer.id, { position: { x: dragStart.current.px + dx, y: dragStart.current.py + dy } })
-  }, [canvasScale, layer.id, updateLayer, pushHistory])
+    updateLayer(drag.layerId, { position: { x: drag.px + dx, y: drag.py + dy } })
+  }, [canvasScale, updateLayer, pushHistory])
 
   const onMouseUp = useCallback(() => { dragStart.current = null; didPushHistory.current = false }, [])
 
@@ -217,6 +291,11 @@ export const Canvas: React.FC = () => {
   const [isPanning, setIsPanning] = useState(false)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 })
+
+  // Keep the alpha hit-test canvases in sync with the current layers
+  useEffect(() => {
+    layers.forEach(l => { if (l.png_path) preloadHitCanvas(l.png_path) })
+  }, [layers])
 
   // Activate drawing hooks
   useCanvasDraw(overlayRef, canvasWidth, canvasHeight, canvasScale, guideRef)

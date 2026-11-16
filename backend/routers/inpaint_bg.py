@@ -75,18 +75,35 @@ def inpaint_bg(req: InpaintBgRequest):
             from services.inpaint_service import cv2_inpaint
             result = cv2_inpaint(orig, mask_arr)
 
-    # Save a full-canvas RGBA patch: reconstructed pixels only inside the
-    # layer's mask, transparent elsewhere.  Writing the whole opaque frame
-    # would hide every layer below this one, so the alpha channel is the mask.
+    # Build an RGBA patch: reconstructed pixels only inside the layer's mask,
+    # transparent elsewhere.  Writing the whole opaque frame would hide every
+    # layer below this one, so the alpha channel is the mask.
+    if result.size != orig.size:
+        result = result.resize(orig.size, Image.LANCZOS)
     recon_rgb = np.array(result.convert("RGB"))
     rgba = np.dstack([recon_rgb, mask_arr]).astype(np.uint8)
+
+    # Crop to the mask's content box so the patch matches the layer's tight
+    # bbox (segmentation stores layer PNGs cropped to their content).
+    cols = np.flatnonzero(rgba[:, :, 3].max(axis=0) > 0)
+    rows = np.flatnonzero(rgba[:, :, 3].max(axis=1) > 0)
+    if cols.size == 0 or rows.size == 0:
+        raise HTTPException(422, "Mask is empty")
+    x1, x2 = int(cols[0]), int(cols[-1]) + 1
+    y1, y2 = int(rows[0]), int(rows[-1]) + 1
+    patch = rgba[y1:y2, x1:x2]
+    bbox = {
+        "x": float(x1), "y": float(y1),
+        "width": float(x2 - x1), "height": float(y2 - y1),
+    }
 
     out_name = f"{req.layer_id}_bg_reconstructed_{uuid.uuid4().hex[:8]}.png"
     out_path = config.TEMP_DIR / req.session_id / out_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(rgba).save(str(out_path))
+    Image.fromarray(patch).save(str(out_path))
 
     return {
         "path": f"/temp/{req.session_id}/{out_name}",
         "layer_id": req.layer_id,
+        "bbox": bbox,
     }
