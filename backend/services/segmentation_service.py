@@ -14,10 +14,13 @@ Key design invariants (fixed vs. previous version):
      Transforms applied in the frontend/backend operate on the full canvas,
      so there are no off-center rotation artefacts.
 
-  3. NO FLUX BACKGROUND RECONSTRUCTION — the background layer is always
-     built from the original image pixels.  Object-owned pixels are zeroed
-     in the alpha channel.  The background shows exactly what was in the
-     original image outside of any detected object mask.
+  3. NO EAGER BACKGROUND RECONSTRUCTION — segmentation never runs inpainting
+     by default; that would load SDXL/LaMa and stall every segmentation call.
+     The background layer is built from the original image pixels with
+     object-owned pixels zeroed in the alpha channel.  Reconstruction happens
+     only on demand (POST /restore-background or POST /inpaint-bg) for the
+     parts the user actually asks to reconstruct.  Pass
+     reconstruct_background=True to opt into the eager path.
 
   4. LAYER TYPE METADATA — each LayerData now carries `layer_type`
      (object / background / unrecognized) and `is_background` boolean so
@@ -136,6 +139,7 @@ def _segment_objects_remote(
     session_id: str,
     image_path: str,
     objects: List[Dict[str, Any]],
+    reconstruct_background: bool = False,
 ) -> List[LayerData]:
     """
     Remote segmentation: calls cloud SAM2 API for each detected object,
@@ -246,6 +250,7 @@ def _segment_objects_remote(
         image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects),
         refined_masks=list(refined_masks.values()),
         object_labels=[obj["label"] for _, obj in sorted_objects if obj["label"]],
+        reconstruct=reconstruct_background,
     )
     if bg_layer:
         layers.append(bg_layer)
@@ -267,33 +272,45 @@ def _build_background_layer(
     num_objects: int,
     refined_masks: Optional[List[np.ndarray]] = None,
     object_labels: Optional[List[str]] = None,
+    reconstruct: bool = False,
 ) -> Optional[LayerData]:
     """
-    Build a fully-opaque background layer with intelligent restoration.
+    Build the background layer.
 
-    Process:
-    1. Build a union removal mask from all object-owned pixels.
-    2. Call restoration_service.restore_background() to reconstruct the
-       background pixels behind every removed object (Stage A → cv2,
-       Stage B → SDXL/FLUX generative, Stage C → seam blend).
-    3. Save the result as a full-canvas opaque RGBA PNG (alpha = 255 everywhere).
+    Default (reconstruct=False): no inpainting is run.  The layer is the
+    original image with object-owned pixels made transparent (alpha=0), so
+    object layers composite on top of the untouched original background.
+    Reconstruction is left to the on-demand endpoints, which only run for
+    the part the user explicitly asks for.
 
-    The background layer is FULLY OPAQUE (alpha=255) because it sits at
-    z_index=0 and object layers composite on top of it.  There are no
-    transparent holes — the restoration fills every object-shaped gap.
+    Opt-in (reconstruct=True): call restoration_service.restore_background()
+    to reconstruct the pixels behind every removed object (Stage A → LaMa/cv2,
+    Stage B → SDXL generative, Stage C → seam blend) and save a fully opaque
+    full-canvas RGBA PNG.
     """
-    from services.restoration_service import restore_background, build_removal_mask
-
     # Build the union mask of all object-owned pixels
     union_mask = (ownership_map >= 0).astype(np.uint8) * 255
 
     object_pixel_count = int(np.sum(union_mask > 0))
-    logger.info(f"[segmentation] object pixels to restore: {object_pixel_count}")
+    logger.info(f"[segmentation] object pixels: {object_pixel_count} (reconstruct={reconstruct})")
 
     if object_pixel_count == 0:
         logger.info("[segmentation] no objects — using original image as background")
         restored_np = image_np.copy()
+        background_alpha = None  # fully opaque
+    elif not reconstruct:
+        logger.info(
+            "[segmentation] background reconstruction skipped — transparent gaps kept "
+            "until the user requests reconstruction"
+        )
+        if object_pixel_count >= img_w * img_h:
+            logger.info("[segmentation] every pixel is object-owned — no background layer")
+            return None
+        restored_np = image_np.copy()
+        background_alpha = np.where(ownership_map >= 0, 0, 255).astype(np.uint8)
     else:
+        from services.restoration_service import restore_background
+
         _labels = object_labels or []
         _masks  = refined_masks or []
 
@@ -323,6 +340,7 @@ def _build_background_layer(
                 f"— falling back to original image for background layer"
             )
             restored_np = image_np.copy()
+        background_alpha = None  # fully opaque
 
     layer_id  = f"{session_id}_bg_{uuid.uuid4().hex[:6]}"
     mask_name = f"{layer_id}_background_mask.png"
@@ -334,9 +352,13 @@ def _build_background_layer(
     full_mask = np.full((img_h, img_w), 255, dtype=np.uint8)
     Image.fromarray(full_mask).save(str(mask_file))
 
-    # Layer PNG: fully opaque RGBA using the RESTORED image
+    # Layer PNG: original (or restored) pixels; object gaps are transparent
+    # unless restoration filled them.
     rgba = cv2.cvtColor(restored_np, cv2.COLOR_RGB2RGBA)
-    rgba[:, :, 3] = 255  # fully opaque — objects composite on top
+    if background_alpha is None:
+        rgba[:, :, 3] = 255  # fully opaque — objects composite on top
+    else:
+        rgba[:, :, 3] = background_alpha
     Image.fromarray(rgba).save(str(png_file), optimize=False)
 
     full_bbox = {"x": 0.0, "y": 0.0, "width": float(img_w), "height": float(img_h)}
@@ -362,13 +384,16 @@ def segment_objects(
     session_id: str,
     image_path: str,
     objects: List[Dict[str, Any]],
+    reconstruct_background: bool = False,
 ) -> List[LayerData]:
     logger.info(f"[segmentation] session={session_id} objects={len(objects)} image={image_path}")
 
     # ── Remote mode ────────────────────────────────────────────────────────
     from services.remote_config import remote_cfg
     if remote_cfg.COMPUTE_MODE == "remote":
-        return _segment_objects_remote(session_id, image_path, objects)
+        return _segment_objects_remote(
+            session_id, image_path, objects, reconstruct_background
+        )
 
     # ── Local mode ─────────────────────────────────────────────────────────
     logger.info("[segmentation] loading SAM2 predictor…")
@@ -528,6 +553,7 @@ def segment_objects(
         image_np, ownership_map, session_id, session_dir, img_w, img_h, len(objects),
         refined_masks=_refined_mask_list,
         object_labels=_object_label_list,
+        reconstruct=reconstruct_background,
     )
     if bg_layer:
         layers.append(bg_layer)

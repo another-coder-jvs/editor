@@ -51,6 +51,9 @@ class SegmentRequest(BaseModel):
     session_id: str
     image_path: str
     objects: List[Dict[str, Any]]
+    # Off by default: segmentation must stay fast. Reconstruction of the
+    # background behind objects runs only on demand (POST /restore-background).
+    reconstruct_background: bool = False
 
 
 class SegmentResponse(BaseModel):

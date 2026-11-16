@@ -25,7 +25,10 @@ async def build_layers(req: SegmentRequest):
 
     set_progress(req.session_id, "layers", 0.1, "Building layers…")
     try:
-        layers = segment_objects(req.session_id, str(image_path), req.objects)
+        layers = segment_objects(
+            req.session_id, str(image_path), req.objects,
+            reconstruct_background=req.reconstruct_background,
+        )
     except Exception as e:
         logger.exception(f"[layers] failed: {e}")
         raise

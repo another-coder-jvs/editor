@@ -16,7 +16,10 @@ async def segment(req: SegmentRequest):
     logger.info(f"[segment] session={req.session_id} objects={len(req.objects)} image={req.image_path}")
     set_progress(req.session_id, "segment", 0.1, "Running SAM2 segmentation…")
     try:
-        layers = segment_objects(req.session_id, req.image_path, req.objects)
+        layers = segment_objects(
+            req.session_id, req.image_path, req.objects,
+            reconstruct_background=req.reconstruct_background,
+        )
     except Exception as e:
         logger.exception(f"[segment] failed: {e}")
         raise
