@@ -42,30 +42,34 @@ function buildOverlayStyle(adj: LayerAdjustments, w: number, h: number) {
 // still overlap. Sampling the layer's own alpha means a click on a transparent
 // pixel falls through to the layer underneath instead of selecting empty area.
 const hitCanvasCache = new Map<string, HTMLCanvasElement>()
-const hitCanvasLoading = new Set<string>()
 
-function preloadHitCanvas(pngPath: string): void {
-  if (!pngPath || hitCanvasCache.has(pngPath) || hitCanvasLoading.has(pngPath)) return
-  hitCanvasLoading.add(pngPath)
-  const img = new Image()
-  img.crossOrigin = 'anonymous'
-  img.onload = () => {
-    const c = document.createElement('canvas')
-    c.width = img.naturalWidth
-    c.height = img.naturalHeight
-    c.getContext('2d')?.drawImage(img, 0, 0)
+/**
+ * Cache a layer's pixels for hit-testing from the <img> already on screen.
+ *
+ * The rendered <img> uses a fetch()/blob URL that carries the ngrok header, so
+ * drawing it here never needs a second request and is not tainted. Caching at
+ * image-load time is what makes alpha hit-testing reliable; loading images
+ * independently previously failed and left every layer looking opaque.
+ */
+export function registerHitCanvas(pngPath: string, img: HTMLImageElement): void {
+  if (!pngPath || hitCanvasCache.has(pngPath)) return
+  if (!img.naturalWidth || !img.naturalHeight) return
+  const c = document.createElement('canvas')
+  c.width = img.naturalWidth
+  c.height = img.naturalHeight
+  const ctx = c.getContext('2d')
+  if (!ctx) return
+  try {
+    ctx.drawImage(img, 0, 0)
+    ctx.getImageData(0, 0, 1, 1) // throws if the image tainted the canvas
     hitCanvasCache.set(pngPath, c)
-    hitCanvasLoading.delete(pngPath)
+  } catch {
+    // Cross-origin without CORS → leave uncached, fall back to the bbox test
   }
-  img.onerror = () => { hitCanvasLoading.delete(pngPath) }
-  img.src = pngPath.startsWith('blob:') || pngPath.startsWith('data:')
-    ? pngPath : `${API_BASE}${pngPath}`
 }
 
 /** Alpha (0-255) of a layer at a canvas-space point, honouring rotation/scale. */
 function layerAlphaAt(layer: any, cx: number, cy: number): number {
-  const hit = hitCanvasCache.get(layer.png_path)
-  if (!hit || !hit.width || !hit.height) return 255  // not loaded → assume opaque
   const w = layer.bbox.width, h = layer.bbox.height
   if (!w || !h) return 0
   const centerX = layer.bbox.x + layer.position.x + w / 2
@@ -77,12 +81,19 @@ function layerAlphaAt(layer: any, cx: number, cy: number): number {
   const sx = layer.scale?.x || 1, sy = layer.scale?.y || 1
   const lx = rx / sx + w / 2
   const ly = ry / sy + h / 2
-  if (lx < 0 || ly < 0 || lx >= w || ly >= h) return 0
+  if (!(lx >= 0 && ly >= 0 && lx < w && ly < h)) return 0  // outside layer rect
+
+  const hit = hitCanvasCache.get(layer.png_path)
+  if (!hit || !hit.width || !hit.height) return 255  // pixels unknown → solid rect
   const px = Math.min(hit.width - 1, Math.floor((lx / w) * hit.width))
   const py = Math.min(hit.height - 1, Math.floor((ly / h) * hit.height))
   const ctx = hit.getContext('2d')
   if (!ctx) return 255
-  return ctx.getImageData(px, py, 1, 1).data[3]
+  try {
+    return ctx.getImageData(px, py, 1, 1).data[3]
+  } catch {
+    return 255
+  }
 }
 
 interface LayerImageProps {
@@ -127,8 +138,9 @@ const LayerImage: React.FC<LayerImageProps> = ({
       const rect = canvasEl.getBoundingClientRect()
       const cx = (e.clientX - rect.left) / canvasScale
       const cy = (e.clientY - rect.top) / canvasScale
+      // Layers without a PNG (e.g. text layers) still occupy their rect.
       const candidates = useEditorStore.getState().layers
-        .filter(l => l.visible && l.png_path)
+        .filter(l => l.visible)
         .sort((a, b) => b.z_index - a.z_index)
       const target = candidates.find(l => layerAlphaAt(l, cx, cy) > 8)
       if (!target) {
@@ -224,7 +236,13 @@ const LayerImage: React.FC<LayerImageProps> = ({
       }}
     >
       {thumbUrl && !inlineEditing && (
-        <img src={thumbUrl} alt={layer.name} style={{ width: '100%', height: '100%', objectFit: 'fill' }} draggable={false} />
+        <img
+          src={thumbUrl}
+          alt={layer.name}
+          onLoad={(e) => registerHitCanvas(layer.png_path, e.currentTarget)}
+          style={{ width: '100%', height: '100%', objectFit: 'fill' }}
+          draggable={false}
+        />
       )}
       {/* Vignette overlay */}
       {adj.vignette > 0 && (
@@ -291,11 +309,6 @@ export const Canvas: React.FC = () => {
   const [isPanning, setIsPanning] = useState(false)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const panStart = useRef({ x: 0, y: 0, ox: 0, oy: 0 })
-
-  // Keep the alpha hit-test canvases in sync with the current layers
-  useEffect(() => {
-    layers.forEach(l => { if (l.png_path) preloadHitCanvas(l.png_path) })
-  }, [layers])
 
   // Activate drawing hooks
   useCanvasDraw(overlayRef, canvasWidth, canvasHeight, canvasScale, guideRef)
