@@ -25,7 +25,7 @@ interface TextStyle { color: string; font_size: number; shadow: boolean; shadow_
 
 export const AIEditPanel: React.FC = () => {
   const {
-    layers, selectedLayerIds, updateLayer, addLayer, canvasWidth, canvasHeight,
+    layers, selectedLayerIds, updateLayer, addLayer,
     sessionId, originalImagePath, pushHistory, setProgress,
     setDetectedTextRegions, setTextOverlay, clearTextOverlays,
     textRegionsByLayer, setTextRegionsByLayer: storeSetTextRegionsByLayer,
@@ -357,8 +357,14 @@ export const AIEditPanel: React.FC = () => {
 
   const handleReconstructBg = async () => {
     if (!selectedLayer || !sessionId || !originalImagePath) return
+    if (selectedLayer.is_background) {
+      toast.warn('Select an object layer to reconstruct the background behind it')
+      return
+    }
     if (!selectedLayer.mask_path) { toast.warn('No mask available for this layer'); return }
+    if (selectedLayer.locked) { toast.warn('Layer is locked'); return }
     setIsEditing(true)
+    pushHistory()
     try {
       const result = await reconstructBackground({
         session_id: sessionId,
@@ -366,21 +372,13 @@ export const AIEditPanel: React.FC = () => {
         image_path: originalImagePath,
         mask_path: selectedLayer.mask_path,
       })
-      // Add reconstructed bg as a new layer below the current one
-      const bgId = `${selectedLayer.id}_bg_${Date.now()}`
-      addLayer({
-        ...selectedLayer,
-        id: bgId,
-        name: `bg:${selectedLayer.name}`,
+      // Update the selected layer in place — its pixels are replaced by the
+      // reconstructed background so no duplicate layer is created.
+      updateLayer(selectedLayer.id, {
         png_path: result.path,
-        bbox: { x: 0, y: 0, width: canvasWidth, height: canvasHeight },
-        position: { x: 0, y: 0 },
-        z_index: selectedLayer.z_index - 1,
-        history: [],
-        locked: false,
-        mask_path: '',
+        history: [...selectedLayer.history, 'reconstructed background'],
       })
-      toast.success('Background reconstructed!')
+      toast.success(`Background reconstructed behind "${selectedLayer.name}"`)
     } catch (err: any) {
       toast.error('Reconstruction failed: ' + (err?.message || err))
     } finally { setIsEditing(false) }
@@ -545,10 +543,14 @@ export const AIEditPanel: React.FC = () => {
               className="w-full mt-2 bg-accent hover:bg-accent-hover text-white text-sm py-2 rounded disabled:opacity-40 transition-colors">
               {isEditing ? 'Editing…' : 'Apply Edit (Ctrl+Enter)'}
             </button>
-            <button onClick={handleReconstructBg} disabled={isEditing}
+            <button onClick={handleReconstructBg} disabled={isEditing || !!selectedLayer.is_background}
+              title={selectedLayer.is_background ? 'Select an object layer first' : 'Replace this layer with the reconstructed background behind it'}
               className="w-full mt-1 bg-dark-600 hover:bg-dark-500 text-gray-300 text-sm py-2 rounded disabled:opacity-40 transition-colors">
               {isEditing ? 'Reconstructing…' : '🪄 Reconstruct Background'}
             </button>
+            <p className="text-[10px] text-gray-600 mt-1">
+              Fills the selected layer's area with reconstructed background. Off by default during segmentation.
+            </p>
           </div>
 
           {selectedLayer.history.length > 0 && (
